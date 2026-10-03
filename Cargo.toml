@@ -1,0 +1,13 @@
+[package]
+name = "mote-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Native desktop application for Mote"
+license = "MIT"
+
+[dependencies]
+bee-ui = { path = "../bee-ui/crates/bee-ui" }
+eframe = "0.33"
+mdns-sd = "0.13.11"
+mote-api = { path = "../mote/mote-api" }
