@@ -2,22 +2,16 @@
 Configure the SDK.
 """
 
+load("//@star/packages/star/config.star", "CONFIG_TRACKER_OPTION")
 load("//@star/packages/star/rust.star", "rust_add")
 load("//@star/packages/star/spaces-cli.star", "spaces_add_devutils", "spaces_add_star_formatter")
 load("//@star/packages/star/starship.star", "starship_add_bash")
-load("//@star/packagesstar/config.star", "CONFIG_TRACKER_OPTION")
 load("//@star/prelude/info.star", "info_is_ci")
 load("//@star/prelude/rules/checkout.star", "checkout_add_env_vars", "checkout_add_repo")
 load("//@star/prelude/rules/sdk.star", "sdk_is_owner")
 load("//@star/sdk/star/checkout-config.star", "checkout_config_store_option")
 
 checkout_config_store_option(CONFIG_TRACKER_OPTION, True)
-
-rust_add(
-    "rust_toolchain",
-    version = "1.95",
-    deps = [":rust_workspace_toolchain"],
-)
 
 spaces_add_devutils(
     "spaces0",
@@ -27,9 +21,16 @@ spaces_add_devutils(
     is_activate_sccache = not info_is_ci(),
 )
 
+rust_add(
+    "rust_toolchain",
+    version = "1.95",
+    deps = [":spaces0"],
+)
+
 spaces_add_star_formatter(
     "star_formatter0",
     configure_zed = True,
+    deps = [":spaces0"],
 )
 
 starship_add_bash(
