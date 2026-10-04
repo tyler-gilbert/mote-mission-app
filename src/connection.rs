@@ -1,7 +1,8 @@
 use bee_ui::{
     UiRoot,
     prelude::{
-        Alert, Badge, Button, Card, HStack, Label, ListGroup, ListGroupItem, SvgIcon, Text, Variant,
+        Alert, Badge, Button, Card, HStack, Label, ListGroup, ListGroupItem, Spinner, SvgIcon,
+        Text, Variant,
     },
 };
 
@@ -37,6 +38,7 @@ pub(crate) fn render(
     snapshot: &WorkerSnapshot,
     selected_device: Option<&str>,
     last_error: Option<&str>,
+    refreshing_devices: bool,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
 
@@ -46,10 +48,17 @@ pub(crate) fn render(
     ui.card(Card::with_title("Device discovery"), |ui| {
         ui.hstack(HStack::new().wrap(true), |ui| {
             if ui
-                .button(Button::secondary("Refresh devices").icon(SvgIcon::ArrowClockwise))
+                .button(
+                    Button::secondary("Refresh devices")
+                        .icon(SvgIcon::ArrowClockwise)
+                        .enabled(!refreshing_devices),
+                )
                 .clicked()
             {
                 actions.push(UiAction::Refresh);
+            }
+            if refreshing_devices {
+                ui.spinner(Spinner::new().size(18.0));
             }
             ui.label(Label::new(format!("{} discovered", snapshot.devices.len())).small());
         });

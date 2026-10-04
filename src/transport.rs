@@ -18,6 +18,29 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_secs(4);
 const WORKER_TICK: Duration = Duration::from_millis(25);
 const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
 
+#[derive(Clone, Default)]
+pub(crate) struct LatestTelemetry {
+    pub guidance: Option<pubsub::Guidance>,
+    pub position: Option<pubsub::Position>,
+    pub control: Option<pubsub::Control>,
+    pub imu: Option<pubsub::Imu>,
+    pub lidar_scan: Option<pubsub::Scan>,
+}
+
+impl LatestTelemetry {
+    pub(crate) fn update_pubsub(&mut self, message: pubsub::Message) -> bool {
+        match message {
+            pubsub::Message::Guidance(value) => self.guidance = Some(value),
+            pubsub::Message::Position(value) => self.position = Some(value),
+            pubsub::Message::Control(value) => self.control = Some(value),
+            pubsub::Message::Imu(value) => self.imu = Some(value),
+            pubsub::Message::LidarScan(value) => self.lidar_scan = Some(value),
+            _ => return false,
+        }
+        true
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct DiscoveredDevice {
     pub fullname: String,
@@ -54,16 +77,8 @@ pub(crate) struct WorkerSnapshot {
     pub latest_telemetry: LatestTelemetry,
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct LatestTelemetry {
-    pub guidance: Option<pubsub::Guidance>,
-    pub position: Option<pubsub::Position>,
-    pub control: Option<pubsub::Control>,
-    pub imu: Option<pubsub::Imu>,
-}
-
 pub(crate) struct TransportWorker {
-    commands: SyncSender<WorkerCommand>,
+    commands: SyncSender<WorkerRequest>,
     events: Receiver<WorkerSnapshot>,
     thread: Option<JoinHandle<()>>,
 }
@@ -85,8 +100,24 @@ impl TransportWorker {
     }
 
     pub(crate) fn command(&self, command: WorkerCommand) -> Result<(), String> {
+        self.send_request(WorkerRequest::Command(command))
+    }
+
+    pub(crate) fn refresh(&self) -> Result<(), String> {
+        self.send_request(WorkerRequest::Refresh)
+    }
+
+    pub(crate) fn connect(&self, fullname: String) -> Result<(), String> {
+        self.send_request(WorkerRequest::Connect(fullname))
+    }
+
+    pub(crate) fn disconnect(&self) -> Result<(), String> {
+        self.send_request(WorkerRequest::Disconnect)
+    }
+
+    fn send_request(&self, request: WorkerRequest) -> Result<(), String> {
         self.commands
-            .try_send(command)
+            .try_send(request)
             .map_err(|error| match error {
                 TrySendError::Full(_) => "Transport worker is busy; try again shortly".to_owned(),
                 TrySendError::Disconnected(_) => "Transport worker is not available".to_owned(),
@@ -99,7 +130,7 @@ impl TransportWorker {
 
     pub(crate) fn shutdown(&mut self) {
         if let Some(worker_thread) = self.thread.take() {
-            let _ = self.commands.send(WorkerCommand::Shutdown);
+            let _ = self.commands.send(WorkerRequest::Shutdown);
             let _ = worker_thread.join();
         }
     }
@@ -112,14 +143,15 @@ impl Drop for TransportWorker {
 }
 
 pub(crate) enum WorkerCommand {
+    HostToMote(host_to_mote::Message),
+    PubSub(pubsub::Message),
+}
+
+enum WorkerRequest {
+    Command(WorkerCommand),
     Refresh,
     Connect(String),
     Disconnect,
-    SetControlMode(bool),
-    SetDriveVelocity {
-        left_velocity_rad_per_s: f32,
-        right_velocity_rad_per_s: f32,
-    },
     Shutdown,
 }
 
@@ -180,7 +212,7 @@ impl WorkerState {
     }
 }
 
-fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapshot>) {
+fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapshot>) {
     let mut state = WorkerState {
         devices: BTreeMap::new(),
         discovery_status: "Starting mDNS discovery…".to_owned(),
@@ -209,7 +241,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
         let mut shutting_down = false;
         loop {
             match commands.try_recv() {
-                Ok(WorkerCommand::Refresh) => {
+                Ok(WorkerRequest::Refresh) => {
                     match discovery.as_mut() {
                         Some(current) => {
                             let refreshed = current
@@ -240,7 +272,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                     }
                     dirty = true;
                 }
-                Ok(WorkerCommand::Connect(fullname)) => {
+                Ok(WorkerRequest::Connect(fullname)) => {
                     close_session(&mut session);
                     state.last_protocol_error = None;
                     state.latest_telemetry = LatestTelemetry::default();
@@ -271,7 +303,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                     }
                     dirty = true;
                 }
-                Ok(WorkerCommand::Disconnect) => {
+                Ok(WorkerRequest::Disconnect) => {
                     let stop_error = close_session(&mut session);
                     state.connection = match stop_error {
                         Some(error) => ConnectionStatus::Error(format!(
@@ -281,12 +313,13 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                     };
                     dirty = true;
                 }
-                Ok(WorkerCommand::SetControlMode(enabled)) => {
-                    let message = if enabled {
-                        pubsub::Message::EnableControlMode
-                    } else {
-                        pubsub::Message::DisableControlMode
-                    };
+                Ok(WorkerRequest::Command(WorkerCommand::HostToMote(message))) => {
+                    if let Some(error) = send_active_message(&mut session, message) {
+                        state.connection = ConnectionStatus::Error(error);
+                    }
+                    dirty = true;
+                }
+                Ok(WorkerRequest::Command(WorkerCommand::PubSub(message))) => {
                     if let Some(error) =
                         send_active_message(&mut session, host_to_mote::Message::PubSub(message))
                     {
@@ -294,22 +327,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                     }
                     dirty = true;
                 }
-                Ok(WorkerCommand::SetDriveVelocity {
-                    left_velocity_rad_per_s,
-                    right_velocity_rad_per_s,
-                }) => {
-                    let message = host_to_mote::Message::SetDriveBaseVelocity(
-                        host_to_mote::SetDriveBaseVelocity {
-                            left_velocity_rad_per_s,
-                            right_velocity_rad_per_s,
-                        },
-                    );
-                    if let Some(error) = send_active_message(&mut session, message) {
-                        state.connection = ConnectionStatus::Error(error);
-                    }
-                    dirty = true;
-                }
-                Ok(WorkerCommand::Shutdown) => {
+                Ok(WorkerRequest::Shutdown) => {
                     shutting_down = true;
                     break;
                 }
@@ -597,25 +615,15 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
                                         state_changed = true;
                                     }
                                 }
-                                mote_to_host::Message::PubSub(message) => match message {
-                                    pubsub::Message::Guidance(value) => {
-                                        state.latest_telemetry.guidance = Some(value);
-                                        state_changed = true;
-                                    }
-                                    pubsub::Message::Position(value) => {
-                                        state.latest_telemetry.position = Some(value);
-                                        state_changed = true;
-                                    }
-                                    pubsub::Message::Control(value) => {
-                                        state.latest_telemetry.control = Some(value);
-                                        state_changed = true;
-                                    }
-                                    pubsub::Message::Imu(value) => {
-                                        state.latest_telemetry.imu = Some(value);
-                                        state_changed = true;
-                                    }
-                                    _ => {}
-                                },
+                                mote_to_host::Message::Scan(scan) => {
+                                    let scan = pubsub_lidar_scan(&scan);
+                                    state_changed |= state
+                                        .latest_telemetry
+                                        .update_pubsub(pubsub::Message::LidarScan(scan));
+                                }
+                                mote_to_host::Message::PubSub(message) => {
+                                    state_changed |= state.latest_telemetry.update_pubsub(message);
+                                }
                                 mote_to_host::Message::Ping => {
                                     send_message(
                                         &mut session.link,
@@ -644,6 +652,21 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
     }
 
     Ok(state_changed)
+}
+
+fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> pubsub::Scan {
+    let mut converted = pubsub::Scan::new();
+    for reading in scan {
+        let point = pubsub::ScanPoint {
+            quality: reading.quality,
+            angle: units::PlaneAngle::new(reading.angle_rad),
+            distance: units::Length::new(reading.distance_mm / 1_000.0),
+        };
+        if converted.push(point).is_err() {
+            break;
+        }
+    }
+    converted
 }
 
 fn send_active_message(

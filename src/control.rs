@@ -1,35 +1,26 @@
 use bee_ui::{
     UiRoot,
-    prelude::{
-        Badge, Card, Col, FormSelect, FormSelectOption, Label, Row, SpanIcon, SvgIcon, Text,
-    },
+    prelude::{Badge, Card, Col, FormSelect, FormSelectOption, Row, SpanIcon, SvgIcon, Text},
 };
 use eframe::egui;
+use mote_api::messages::pubsub;
 
-use crate::transport::{ConnectionStatus, LatestTelemetry, WorkerSnapshot};
+use crate::transport::{ConnectionStatus, LatestTelemetry};
 
 const FORWARD_SPEED_RAD_PER_S: f32 = 1.5;
 const TURN_SPEED_RAD_PER_S: f32 = 1.0;
 const STOP: (f32, f32) = (0.0, 0.0);
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum ControlAction {
-    SetMode(bool),
-    Drive {
-        left_velocity_rad_per_s: f32,
-        right_velocity_rad_per_s: f32,
-    },
-}
-
 pub(crate) fn render(
     ui: &mut UiRoot<'_>,
-    snapshot: &WorkerSnapshot,
+    telemetry: &LatestTelemetry,
+    connection: &ConnectionStatus,
     last_error: Option<&str>,
     mode_enabled: bool,
     drive_velocity: (f32, f32),
-) -> Vec<ControlAction> {
+) -> Vec<pubsub::Message> {
     let mut actions = Vec::new();
-    let connected = matches!(&snapshot.connection, ConnectionStatus::Connected { .. });
+    let connected = matches!(connection, ConnectionStatus::Connected { .. });
 
     if let Some(error) = last_error {
         ui.raw(|raw_ui| raw_ui.colored_label(egui::Color32::LIGHT_RED, error));
@@ -103,23 +94,27 @@ pub(crate) fn render(
         STOP
     };
 
-    render_latest_telemetry(ui, &snapshot.latest_telemetry);
+    render_latest_telemetry(ui, telemetry);
 
     let drive_changed = target_velocity != drive_velocity;
     if mode_changed && !new_mode_enabled && drive_changed {
-        actions.push(ControlAction::Drive {
-            left_velocity_rad_per_s: target_velocity.0,
-            right_velocity_rad_per_s: target_velocity.1,
-        });
+        actions.push(pubsub::Message::Control(pubsub::Control {
+            left: units::AngularVelocity::new(target_velocity.0),
+            right: units::AngularVelocity::new(target_velocity.1),
+        }));
     }
     if mode_changed {
-        actions.push(ControlAction::SetMode(new_mode_enabled));
+        actions.push(if new_mode_enabled {
+            pubsub::Message::EnableControlMode
+        } else {
+            pubsub::Message::DisableControlMode
+        });
     }
     if drive_changed && !(mode_changed && !new_mode_enabled) {
-        actions.push(ControlAction::Drive {
-            left_velocity_rad_per_s: target_velocity.0,
-            right_velocity_rad_per_s: target_velocity.1,
-        });
+        actions.push(pubsub::Message::Control(pubsub::Control {
+            left: units::AngularVelocity::new(target_velocity.0),
+            right: units::AngularVelocity::new(target_velocity.1),
+        }));
     }
 
     actions

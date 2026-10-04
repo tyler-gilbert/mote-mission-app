@@ -5,14 +5,14 @@ Spaces rules for developing the native Mote application.
 load("//@star/prelude/rules/deps.star", "deps_new")
 load("//@star/prelude/rules/run.star", "run_add", "run_add_exec", "run_log_level_passthrough")
 
-_BEE_UI_ASSETS = deps_new(rules = ["//bee-ui:cargo_fonts_icons"])
+_DEPS = deps_new(rules = ["//bee-ui:cargo_fonts_icons"], files = ["src/**/*.rs"])
 
 run_add_exec(
     "check",
     command = "cargo",
     args = ["check"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -20,7 +20,7 @@ run_add_exec(
     command = "cargo",
     args = ["build"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -28,7 +28,7 @@ run_add_exec(
     command = "cargo",
     args = ["run"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -36,7 +36,7 @@ run_add_exec(
     command = "cargo",
     args = ["test"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -44,7 +44,7 @@ run_add_exec(
     command = "cargo",
     args = ["fmt"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -52,7 +52,7 @@ run_add_exec(
     command = "cargo",
     args = ["fmt", "--check"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add_exec(
@@ -60,7 +60,7 @@ run_add_exec(
     command = "cargo",
     args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
     working_directory = ".",
-    deps = _BEE_UI_ASSETS,
+    deps = _DEPS,
 )
 
 run_add(

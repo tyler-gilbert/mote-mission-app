@@ -1,9 +1,13 @@
 use bee_ui::{
     UiRoot,
-    prelude::{Button, Container, HStack, SvgIcon},
+    prelude::{Badge, Button, Container, HStack, SvgIcon},
 };
+use mote_api::messages::pubsub;
 
-use crate::{connection, control, mission, settings, telemetry, transport::WorkerSnapshot};
+use crate::{
+    connection, control, mission, settings, telemetry,
+    transport::{ConnectionStatus, WorkerSnapshot},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ControlPanel {
@@ -36,8 +40,8 @@ impl ControlPanel {
     const fn icon(self) -> SvgIcon {
         match self {
             Self::Connection => SvgIcon::HddNetwork,
-            Self::Control => SvgIcon::Activity,
-            Self::Mission => SvgIcon::RocketTakeoff,
+            Self::Control => SvgIcon::Joystick,
+            Self::Mission => SvgIcon::AirplaneFill,
             Self::Telemetry => SvgIcon::Activity,
             Self::Settings => SvgIcon::Gear,
         }
@@ -51,11 +55,7 @@ pub(crate) enum UiAction {
     SelectDevice(String),
     Connect(String),
     Disconnect,
-    SetMode(bool),
-    Drive {
-        left_velocity_rad_per_s: f32,
-        right_velocity_rad_per_s: f32,
-    },
+    PubSub(pubsub::Message),
 }
 
 pub(crate) fn render(
@@ -64,6 +64,7 @@ pub(crate) fn render(
     selected_device: Option<&str>,
     last_error: Option<&str>,
     active_panel: ControlPanel,
+    refreshing_devices: bool,
     mode_enabled: bool,
     drive_velocity: (f32, f32),
 ) -> Vec<UiAction> {
@@ -88,6 +89,20 @@ pub(crate) fn render(
                     actions.push(UiAction::SelectPanel(panel));
                 }
             }
+            match &snapshot.connection {
+                ConnectionStatus::Disconnected => {
+                    ui.badge(Badge::secondary("Disconnected").as_pill());
+                }
+                ConnectionStatus::Connecting { uid, .. } => {
+                    ui.badge(Badge::warning(format!("Connecting to {uid}")).as_pill());
+                }
+                ConnectionStatus::Connected { uid, .. } => {
+                    ui.badge(Badge::success(format!("Connected to {uid}")).as_pill());
+                }
+                ConnectionStatus::Error(_) => {
+                    ui.badge(Badge::danger("Connection error").as_pill());
+                }
+            }
         });
 
         match active_panel {
@@ -97,26 +112,29 @@ pub(crate) fn render(
                     snapshot,
                     selected_device,
                     last_error,
+                    refreshing_devices,
                 ));
             }
             ControlPanel::Control => {
                 actions.extend(
-                    control::render(ui, snapshot, last_error, mode_enabled, drive_velocity)
-                        .into_iter()
-                        .map(|action| match action {
-                            control::ControlAction::SetMode(enabled) => UiAction::SetMode(enabled),
-                            control::ControlAction::Drive {
-                                left_velocity_rad_per_s,
-                                right_velocity_rad_per_s,
-                            } => UiAction::Drive {
-                                left_velocity_rad_per_s,
-                                right_velocity_rad_per_s,
-                            },
-                        }),
+                    control::render(
+                        ui,
+                        &snapshot.latest_telemetry,
+                        &snapshot.connection,
+                        last_error,
+                        mode_enabled,
+                        drive_velocity,
+                    )
+                    .into_iter()
+                    .map(UiAction::PubSub),
                 );
             }
             ControlPanel::Mission => mission::render(ui),
-            ControlPanel::Telemetry => telemetry::render(ui),
+            ControlPanel::Telemetry => {
+                if let Some(message) = telemetry::render(ui, &snapshot.latest_telemetry) {
+                    actions.push(UiAction::PubSub(message));
+                }
+            }
             ControlPanel::Settings => settings::render(ui),
         }
     });
