@@ -2,17 +2,11 @@
 Load the spaces starlark SDK and packages repositories.
 """
 
-load("//@star/prelude/rules/checkout.star", "checkout_add_env_vars")
+load("//@star/prelude/rules/checkout.star", "checkout_add_env_vars", "checkout_add_repo")
 load("//@star/prelude/rules/env.star", "env_append")
-load("//@star/prelude/rules/sdk.star", "sdk_add_repo", "sdk_is_owner")
+load("//@star/prelude/rules/sdk.star", "sdk_add_repo")
 
-sdk_add_repo(
-    "@star/packages",
-    url = "https://github.com/work-spaces/packages",
-    rev = "add-package-tracking",
-)
-
-if sdk_is_owner():
+def pre_checkout():
     # Ensure tools checked out to sysroot/bin are available
     # during checkout_add_exec() calls
     checkout_add_env_vars(
@@ -21,3 +15,16 @@ if sdk_is_owner():
             env_append("PATH", "{}/sysroot/bin".format(workspace.get_absolute_path()), help = "Add sysroot/bin to the PATH"),
         ],
     )
+
+    checkout_add_repo(
+        "@star/packages",
+        url = "https://github.com/work-spaces/packages",
+        rev = "add-package-tracking",
+    )
+
+sdk_add_repo(
+    "@star/sdk",
+    url = "https://github.com/work-spaces/sdk",
+    rev = "main",
+    execute_pre_checkout = pre_checkout,
+)

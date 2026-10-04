@@ -1,13 +1,16 @@
+mod connection;
+mod control;
+mod mission;
+mod settings;
+mod telemetry;
 mod transport;
 mod ui;
 
 use std::{sync::mpsc::TryRecvError, time::Duration};
 
 use eframe::egui;
-use transport::{
-    ConnectionStatus, DiscoveredDevice, TransportWorker, WorkerCommand, WorkerSnapshot,
-};
-use ui::UiAction;
+use transport::{ConnectionStatus, TransportWorker, WorkerCommand, WorkerSnapshot};
+use ui::{ControlPanel, UiAction};
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -21,6 +24,7 @@ fn main() -> eframe::Result {
         "Mote",
         options,
         Box::new(|creation_context| {
+            egui_extras::install_image_loaders(&creation_context.egui_ctx);
             bee_ui::theme::install_default_theme(&creation_context.egui_ctx);
             Ok(Box::new(MoteApp::new()))
         }),
@@ -31,6 +35,9 @@ struct MoteApp {
     worker: TransportWorker,
     snapshot: WorkerSnapshot,
     selected_device: Option<String>,
+    active_panel: ControlPanel,
+    control_mode_enabled: bool,
+    drive_velocity: (f32, f32),
     last_error: Option<String>,
 }
 
@@ -46,8 +53,12 @@ impl MoteApp {
                 malformed_packets: 0,
                 version_mismatches: 0,
                 last_protocol_error: None,
+                latest_telemetry: transport::LatestTelemetry::default(),
             },
             selected_device: None,
+            active_panel: ControlPanel::Connection,
+            control_mode_enabled: false,
+            drive_velocity: (0.0, 0.0),
             last_error: None,
         }
     }
@@ -64,48 +75,70 @@ impl MoteApp {
             }
         }
 
-        reconcile_selected_device(&self.snapshot.devices, &mut self.selected_device);
-    }
-
-    fn send_command(&mut self, command: WorkerCommand) {
-        match self.worker.command(command) {
-            Ok(()) => self.last_error = None,
-            Err(error) => self.last_error = Some(error),
+        connection::reconcile_selected_device(&self.snapshot.devices, &mut self.selected_device);
+        if !matches!(
+            &self.snapshot.connection,
+            ConnectionStatus::Connected { .. }
+        ) {
+            self.control_mode_enabled = false;
+            self.drive_velocity = (0.0, 0.0);
         }
     }
 
-    fn selected_device(&self) -> Option<&DiscoveredDevice> {
-        find_selected_device(&self.snapshot.devices, self.selected_device.as_deref())
+    fn send_command(&mut self, command: WorkerCommand) -> bool {
+        match self.worker.command(command) {
+            Ok(()) => {
+                self.last_error = None;
+                true
+            }
+            Err(error) => {
+                self.last_error = Some(error);
+                false
+            }
+        }
+    }
+
+    fn stop_drive(&mut self) {
+        if self.drive_velocity != (0.0, 0.0)
+            && self.send_command(WorkerCommand::SetDriveVelocity {
+                left_velocity_rad_per_s: 0.0,
+                right_velocity_rad_per_s: 0.0,
+            })
+        {
+            self.drive_velocity = (0.0, 0.0);
+        }
     }
 
     fn apply_ui_action(&mut self, action: UiAction) {
         match action {
-            UiAction::Refresh => self.send_command(WorkerCommand::Refresh),
+            UiAction::SelectPanel(panel) => self.active_panel = panel,
+            UiAction::Refresh => {
+                self.send_command(WorkerCommand::Refresh);
+            }
             UiAction::SelectDevice(fullname) => self.selected_device = Some(fullname),
             UiAction::Connect(fullname) => {
                 self.send_command(WorkerCommand::Connect(fullname));
             }
-            UiAction::Disconnect => self.send_command(WorkerCommand::Disconnect),
+            UiAction::Disconnect => {
+                self.send_command(WorkerCommand::Disconnect);
+            }
+            UiAction::SetMode(enabled) => {
+                if self.send_command(WorkerCommand::SetControlMode(enabled)) {
+                    self.control_mode_enabled = enabled;
+                }
+            }
+            UiAction::Drive {
+                left_velocity_rad_per_s,
+                right_velocity_rad_per_s,
+            } => {
+                if self.send_command(WorkerCommand::SetDriveVelocity {
+                    left_velocity_rad_per_s,
+                    right_velocity_rad_per_s,
+                }) {
+                    self.drive_velocity = (left_velocity_rad_per_s, right_velocity_rad_per_s);
+                }
+            }
         }
-    }
-}
-
-fn find_selected_device<'a>(
-    devices: &'a [DiscoveredDevice],
-    selected_fullname: Option<&str>,
-) -> Option<&'a DiscoveredDevice> {
-    let selected_fullname = selected_fullname?;
-    devices
-        .iter()
-        .find(|device| device.fullname == selected_fullname)
-}
-
-fn reconcile_selected_device(devices: &[DiscoveredDevice], selected: &mut Option<String>) {
-    if selected
-        .as_deref()
-        .is_some_and(|fullname| find_selected_device(devices, Some(fullname)).is_none())
-    {
-        *selected = None;
     }
 }
 
@@ -119,64 +152,18 @@ impl eframe::App for MoteApp {
                 &self.snapshot,
                 self.selected_device.as_deref(),
                 self.last_error.as_deref(),
+                self.active_panel,
+                self.control_mode_enabled,
+                self.drive_velocity,
             )
         });
         for action in actions {
             self.apply_ui_action(action);
         }
+        if self.active_panel != ControlPanel::Control || !self.control_mode_enabled {
+            self.stop_drive();
+        }
 
         context.request_repaint_after(Duration::from_millis(100));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::SocketAddr;
-
-    use super::*;
-
-    fn discovered_device(fullname: &str) -> DiscoveredDevice {
-        DiscoveredDevice {
-            fullname: fullname.to_owned(),
-            uid: "mote-1".to_owned(),
-            hostname: "mote-1.local.".to_owned(),
-            endpoint: Some(SocketAddr::from(([127, 0, 0, 1], 7475))),
-            status: "resolved".to_owned(),
-        }
-    }
-
-    #[test]
-    fn selection_is_cleared_when_device_disappears() {
-        let devices = [discovered_device("mote-2._mote-api._udp.local.")];
-        let mut selected = Some("mote-1._mote-api._udp.local.".to_owned());
-
-        reconcile_selected_device(&devices, &mut selected);
-
-        assert_eq!(selected, None);
-    }
-
-    #[test]
-    fn selection_is_retained_while_device_remains_discovered() {
-        let fullname = "mote-1._mote-api._udp.local.";
-        let devices = [discovered_device(fullname)];
-        let mut selected = Some(fullname.to_owned());
-
-        reconcile_selected_device(&devices, &mut selected);
-
-        assert_eq!(selected.as_deref(), Some(fullname));
-    }
-
-    #[test]
-    fn selected_device_lookup_requires_a_current_discovery_entry() {
-        let device = discovered_device("mote-1._mote-api._udp.local.");
-        let devices = [device];
-
-        assert!(find_selected_device(&devices, None).is_none());
-        assert!(find_selected_device(&devices, Some("unknown")).is_none());
-        assert_eq!(
-            find_selected_device(&devices, Some("mote-1._mote-api._udp.local."))
-                .map(|device| device.uid.as_str()),
-            Some("mote-1")
-        );
     }
 }

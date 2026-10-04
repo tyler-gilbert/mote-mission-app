@@ -9,7 +9,7 @@ use std::{
 use mdns_sd::{DaemonEvent, Receiver as MdnsReceiver, ServiceDaemon, ServiceEvent, ServiceInfo};
 use mote_api::{
     MoteLink,
-    messages::{host_to_mote, mote_to_host},
+    messages::{host_to_mote, mote_to_host, pubsub},
 };
 
 const SERVICE_TYPE: &str = "_mote-api._udp.local.";
@@ -42,7 +42,7 @@ pub(crate) enum ConnectionStatus {
     Error(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct WorkerSnapshot {
     pub devices: Vec<DiscoveredDevice>,
     pub discovery_status: String,
@@ -51,6 +51,15 @@ pub(crate) struct WorkerSnapshot {
     pub malformed_packets: u64,
     pub version_mismatches: u64,
     pub last_protocol_error: Option<String>,
+    pub latest_telemetry: LatestTelemetry,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct LatestTelemetry {
+    pub guidance: Option<pubsub::Guidance>,
+    pub position: Option<pubsub::Position>,
+    pub control: Option<pubsub::Control>,
+    pub imu: Option<pubsub::Imu>,
 }
 
 pub(crate) struct TransportWorker {
@@ -106,6 +115,11 @@ pub(crate) enum WorkerCommand {
     Refresh,
     Connect(String),
     Disconnect,
+    SetControlMode(bool),
+    SetDriveVelocity {
+        left_velocity_rad_per_s: f32,
+        right_velocity_rad_per_s: f32,
+    },
     Shutdown,
 }
 
@@ -135,6 +149,7 @@ struct WorkerState {
     malformed_packets: u64,
     version_mismatches: u64,
     last_protocol_error: Option<String>,
+    latest_telemetry: LatestTelemetry,
 }
 
 impl WorkerState {
@@ -160,6 +175,7 @@ impl WorkerState {
             malformed_packets: self.malformed_packets,
             version_mismatches: self.version_mismatches,
             last_protocol_error: self.last_protocol_error.clone(),
+            latest_telemetry: self.latest_telemetry.clone(),
         }
     }
 }
@@ -173,6 +189,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
         malformed_packets: 0,
         version_mismatches: 0,
         last_protocol_error: None,
+        latest_telemetry: LatestTelemetry::default(),
     };
     let mut discovery = match start_discovery() {
         Ok(discovery) => {
@@ -226,6 +243,7 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                 Ok(WorkerCommand::Connect(fullname)) => {
                     close_session(&mut session);
                     state.last_protocol_error = None;
+                    state.latest_telemetry = LatestTelemetry::default();
                     match state.devices.get(&fullname).cloned() {
                         Some(device) => match device.endpoint {
                             Some(endpoint) => match connect_device(device, endpoint) {
@@ -263,6 +281,34 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
                     };
                     dirty = true;
                 }
+                Ok(WorkerCommand::SetControlMode(enabled)) => {
+                    let message = if enabled {
+                        pubsub::Message::EnableControlMode
+                    } else {
+                        pubsub::Message::DisableControlMode
+                    };
+                    if let Some(error) =
+                        send_active_message(&mut session, host_to_mote::Message::PubSub(message))
+                    {
+                        state.connection = ConnectionStatus::Error(error);
+                    }
+                    dirty = true;
+                }
+                Ok(WorkerCommand::SetDriveVelocity {
+                    left_velocity_rad_per_s,
+                    right_velocity_rad_per_s,
+                }) => {
+                    let message = host_to_mote::Message::SetDriveBaseVelocity(
+                        host_to_mote::SetDriveBaseVelocity {
+                            left_velocity_rad_per_s,
+                            right_velocity_rad_per_s,
+                        },
+                    );
+                    if let Some(error) = send_active_message(&mut session, message) {
+                        state.connection = ConnectionStatus::Error(error);
+                    }
+                    dirty = true;
+                }
                 Ok(WorkerCommand::Shutdown) => {
                     shutting_down = true;
                     break;
@@ -298,15 +344,9 @@ fn run_worker(commands: Receiver<WorkerCommand>, events: SyncSender<WorkerSnapsh
 
         if let Some(active) = session.as_mut() {
             let now = Instant::now();
-            match receive_messages(
-                active,
-                &mut state.incoming_messages,
-                &mut state.malformed_packets,
-                &mut state.version_mismatches,
-                &mut state.last_protocol_error,
-            ) {
-                Ok(became_connected) => {
-                    if became_connected {
+            match receive_messages(active, &mut state) {
+                Ok(messages_changed_state) => {
+                    if messages_changed_state {
                         dirty = true;
                     }
                 }
@@ -536,15 +576,9 @@ fn send_message(
     Ok(())
 }
 
-fn receive_messages(
-    session: &mut ActiveSession,
-    incoming_messages: &mut u64,
-    malformed_packets: &mut u64,
-    version_mismatches: &mut u64,
-    last_protocol_error: &mut Option<String>,
-) -> Result<bool, String> {
+fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Result<bool, String> {
     let mut buffer = [0_u8; 4096];
-    let mut became_connected = false;
+    let mut state_changed = false;
 
     loop {
         match session.socket.recv(&mut buffer) {
@@ -553,16 +587,35 @@ fn receive_messages(
                 loop {
                     match session.link.poll_receive() {
                         Ok(Some(message)) => {
-                            *incoming_messages += 1;
+                            state.incoming_messages += 1;
                             session.last_seen = Instant::now();
                             match message {
                                 mote_to_host::Message::Pong => {
                                     session.last_pong = Instant::now();
                                     if !session.connected {
                                         session.connected = true;
-                                        became_connected = true;
+                                        state_changed = true;
                                     }
                                 }
+                                mote_to_host::Message::PubSub(message) => match message {
+                                    pubsub::Message::Guidance(value) => {
+                                        state.latest_telemetry.guidance = Some(value);
+                                        state_changed = true;
+                                    }
+                                    pubsub::Message::Position(value) => {
+                                        state.latest_telemetry.position = Some(value);
+                                        state_changed = true;
+                                    }
+                                    pubsub::Message::Control(value) => {
+                                        state.latest_telemetry.control = Some(value);
+                                        state_changed = true;
+                                    }
+                                    pubsub::Message::Imu(value) => {
+                                        state.latest_telemetry.imu = Some(value);
+                                        state_changed = true;
+                                    }
+                                    _ => {}
+                                },
                                 mote_to_host::Message::Ping => {
                                     send_message(
                                         &mut session.link,
@@ -576,11 +629,11 @@ fn receive_messages(
                         Ok(None) => break,
                         Err(error) => {
                             if matches!(&error, mote_api::Error::VersionMismatch { .. }) {
-                                *version_mismatches += 1;
+                                state.version_mismatches += 1;
                             } else {
-                                *malformed_packets += 1;
+                                state.malformed_packets += 1;
                             }
-                            *last_protocol_error = Some(error.to_string());
+                            state.last_protocol_error = Some(error.to_string());
                         }
                     }
                 }
@@ -590,7 +643,30 @@ fn receive_messages(
         }
     }
 
-    Ok(became_connected)
+    Ok(state_changed)
+}
+
+fn send_active_message(
+    session: &mut Option<ActiveSession>,
+    message: host_to_mote::Message,
+) -> Option<String> {
+    let (uid, result) = {
+        let active = session.as_mut().filter(|active| active.connected)?;
+        (
+            active.uid.clone(),
+            send_message(&mut active.link, &active.socket, message),
+        )
+    };
+
+    result.err().map(|error| {
+        let stop_error = close_session(session);
+        match stop_error {
+            Some(stop_error) => {
+                format!("{uid}: command failed: {error}; safe stop failed: {stop_error}")
+            }
+            None => format!("{uid}: command failed: {error}"),
+        }
+    })
 }
 
 fn close_session(session: &mut Option<ActiveSession>) -> Option<String> {

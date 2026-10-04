@@ -1,19 +1,61 @@
 use bee_ui::{
     UiRoot,
-    prelude::{
-        Alert, Badge, Button, Card, Container, HStack, Label, ListGroup, ListGroupItem, Text,
-        Variant,
-    },
+    prelude::{Button, Container, HStack, SvgIcon},
 };
 
-use crate::transport::{ConnectionStatus, WorkerSnapshot};
+use crate::{connection, control, mission, settings, telemetry, transport::WorkerSnapshot};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ControlPanel {
+    Connection,
+    Control,
+    Mission,
+    Telemetry,
+    Settings,
+}
+
+impl ControlPanel {
+    const ALL: [Self; 5] = [
+        Self::Connection,
+        Self::Control,
+        Self::Mission,
+        Self::Telemetry,
+        Self::Settings,
+    ];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Connection => "Connection",
+            Self::Control => "Control",
+            Self::Mission => "Mission",
+            Self::Telemetry => "Telemetry",
+            Self::Settings => "Settings",
+        }
+    }
+
+    const fn icon(self) -> SvgIcon {
+        match self {
+            Self::Connection => SvgIcon::HddNetwork,
+            Self::Control => SvgIcon::Activity,
+            Self::Mission => SvgIcon::RocketTakeoff,
+            Self::Telemetry => SvgIcon::Activity,
+            Self::Settings => SvgIcon::Gear,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub(crate) enum UiAction {
+    SelectPanel(ControlPanel),
     Refresh,
     SelectDevice(String),
     Connect(String),
     Disconnect,
+    SetMode(bool),
+    Drive {
+        left_velocity_rad_per_s: f32,
+        right_velocity_rad_per_s: f32,
+    },
 }
 
 pub(crate) fn render(
@@ -21,161 +63,63 @@ pub(crate) fn render(
     snapshot: &WorkerSnapshot,
     selected_device: Option<&str>,
     last_error: Option<&str>,
+    active_panel: ControlPanel,
+    mode_enabled: bool,
+    drive_velocity: (f32, f32),
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
+    let mut container = Container::fluid().props().fill_height();
+    if !matches!(
+        active_panel,
+        ControlPanel::Mission | ControlPanel::Telemetry
+    ) {
+        container = container.scroll_y();
+    }
 
-    ui.container(Container::fluid().props().scroll_y(), |ui| {
-        ui.label(Label::new("Mote Control").large());
-        ui.text(Text::new("Discover and connect to Motes on your local network.").subtle());
-
-        ui.card(Card::with_title("Device discovery"), |ui| {
-            ui.hstack(HStack::new().wrap(true), |ui| {
-                if ui.button(Button::secondary("Refresh devices")).clicked() {
-                    actions.push(UiAction::Refresh);
-                }
-                ui.label(Label::new(format!("{} discovered", snapshot.devices.len())).small());
-            });
-            ui.text(Text::new(snapshot.discovery_status.as_str()).subtle());
-
-            if snapshot.devices.is_empty() {
-                ui.alert(Alert::info("No Mote services discovered yet."));
-                ui.text(Text::new(
-                    "Discovery uses the _mote-api._udp mDNS service on this LAN.",
-                ));
-            } else {
-                let mut devices = ListGroup::new();
-                for device in &snapshot.devices {
-                    let selected = selected_device == Some(device.fullname.as_str());
-                    let address = device.endpoint.map_or_else(
-                        || "No IPv4 endpoint".to_owned(),
-                        |endpoint| endpoint.to_string(),
-                    );
-                    devices = devices.item(
-                        ListGroupItem::new(format!(
-                            "{}  ·  {}  ·  {}\nHostname: {}  |  Service: {}",
-                            device.uid, address, device.status, device.hostname, device.fullname
-                        ))
-                        .active(selected),
-                    );
-                }
-                if let Some(index) = ui.list_group(devices).clicked_index()
-                    && let Some(device) = snapshot.devices.get(index)
-                {
-                    actions.push(UiAction::SelectDevice(device.fullname.clone()));
-                }
-            }
-        });
-
-        let selected = selected_device.and_then(|fullname| {
-            snapshot
-                .devices
-                .iter()
-                .find(|device| device.fullname == fullname)
-        });
-        let can_connect = can_connect(selected);
-
-        ui.card(Card::new().title("Selected device"), |ui| {
-            ui.hstack(HStack::new().wrap(true), |ui| {
-                if ui
-                    .button(Button::primary("Connect").enabled(can_connect))
-                    .clicked()
-                    && let Some(device) = selected
-                {
-                    actions.push(UiAction::Connect(device.fullname.clone()));
-                }
-                if ui.button(Button::secondary("Disconnect")).clicked() {
-                    actions.push(UiAction::Disconnect);
-                }
-                if let Some(device) = selected {
-                    ui.badge(Badge::info(format!("Selected: {}", device.uid)).as_pill());
+    ui.container(container, |ui| {
+        ui.hstack(HStack::new().wrap(true), |ui| {
+            for panel in ControlPanel::ALL {
+                let button = if panel == active_panel {
+                    Button::primary(panel.title()).icon(panel.icon())
                 } else {
-                    ui.text(Text::new("Select a discovered Mote to connect.").subtle());
+                    Button::secondary(panel.title()).icon(panel.icon())
+                };
+                if ui.button(button).clicked() {
+                    actions.push(UiAction::SelectPanel(panel));
                 }
-            });
-        });
-
-        ui.card(Card::with_title("Connection"), |ui| {
-            match &snapshot.connection {
-                ConnectionStatus::Disconnected => {
-                    ui.badge(Badge::secondary("Disconnected").as_pill());
-                }
-                ConnectionStatus::Connecting { uid, endpoint } => {
-                    ui.badge(Badge::warning("Connecting").as_pill());
-                    ui.alert(Alert::warning(format!(
-                        "Connecting to {uid} at {endpoint}; waiting for protocol Pong…"
-                    )));
-                }
-                ConnectionStatus::Connected {
-                    uid,
-                    endpoint,
-                    last_seen_ago_ms,
-                } => {
-                    ui.badge(Badge::success("Connected").as_pill());
-                    ui.text(Text::new(format!("Connected to {uid} at {endpoint}")));
-                    ui.text(Text::new(format!(
-                        "Last Mote message: {:.1} seconds ago",
-                        *last_seen_ago_ms as f64 / 1000.0
-                    )));
-                }
-                ConnectionStatus::Error(error) => {
-                    ui.badge(Badge::danger("Connection error").as_pill());
-                    ui.alert(Alert::danger(format!("Connection error: {error}")));
-                }
-            }
-
-            ui.text(Text::new(format!(
-                "Decoded incoming messages: {}",
-                snapshot.incoming_messages
-            )));
-            ui.text(Text::new(format!(
-                "Malformed/protocol packets: {} malformed, {} version mismatch",
-                snapshot.malformed_packets, snapshot.version_mismatches
-            )));
-            if let Some(error) = &snapshot.last_protocol_error {
-                ui.alert(Alert::danger(format!("Protocol: {error}")));
             }
         });
 
-        if let Some(error) = last_error {
-            ui.alert(Alert::danger(error));
+        match active_panel {
+            ControlPanel::Connection => {
+                actions.extend(connection::render(
+                    ui,
+                    snapshot,
+                    selected_device,
+                    last_error,
+                ));
+            }
+            ControlPanel::Control => {
+                actions.extend(
+                    control::render(ui, snapshot, last_error, mode_enabled, drive_velocity)
+                        .into_iter()
+                        .map(|action| match action {
+                            control::ControlAction::SetMode(enabled) => UiAction::SetMode(enabled),
+                            control::ControlAction::Drive {
+                                left_velocity_rad_per_s,
+                                right_velocity_rad_per_s,
+                            } => UiAction::Drive {
+                                left_velocity_rad_per_s,
+                                right_velocity_rad_per_s,
+                            },
+                        }),
+                );
+            }
+            ControlPanel::Mission => mission::render(ui),
+            ControlPanel::Telemetry => telemetry::render(ui),
+            ControlPanel::Settings => settings::render(ui),
         }
-
-        ui.text(Text::new(
-            "The app keeps one UDP socket for the selected session, sends an immediate Ping, and pings once per second. A Pong is required to mark the connection live.",
-        ).variant(Variant::Secondary));
     });
 
     actions
-}
-
-fn can_connect(selected: Option<&crate::transport::DiscoveredDevice>) -> bool {
-    selected.is_some_and(|device| device.endpoint.is_some())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::SocketAddr;
-
-    use super::*;
-    use crate::transport::DiscoveredDevice;
-
-    fn device(endpoint: Option<SocketAddr>) -> DiscoveredDevice {
-        DiscoveredDevice {
-            fullname: "mote-1._mote-api._udp.local.".to_owned(),
-            uid: "mote-1".to_owned(),
-            hostname: "mote-1.local.".to_owned(),
-            endpoint,
-            status: "resolved".to_owned(),
-        }
-    }
-
-    #[test]
-    fn connect_requires_a_selected_device_with_a_resolved_endpoint() {
-        let resolved = device(Some(SocketAddr::from(([127, 0, 0, 1], 7475))));
-        let unresolved = device(None);
-
-        assert!(!can_connect(None));
-        assert!(!can_connect(Some(&unresolved)));
-        assert!(can_connect(Some(&resolved)));
-    }
 }
