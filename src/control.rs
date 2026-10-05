@@ -5,24 +5,30 @@ use bee_ui::{
 use eframe::egui;
 use mote_api::messages::pubsub;
 
-use crate::transport::{ConnectionStatus, LatestTelemetry};
+use crate::{
+    state,
+    transport::{ConnectionStatus, LatestTelemetry, WorkerCommand},
+};
 
 const FORWARD_SPEED_RAD_PER_S: f32 = 1.5;
 const TURN_SPEED_RAD_PER_S: f32 = 1.0;
 const STOP: (f32, f32) = (0.0, 0.0);
 
-pub(crate) fn render(
-    ui: &mut UiRoot<'_>,
-    telemetry: &LatestTelemetry,
-    connection: &ConnectionStatus,
-    last_error: Option<&str>,
-    mode_enabled: bool,
-    drive_velocity: (f32, f32),
-) -> Vec<pubsub::Message> {
-    let mut actions = Vec::new();
+#[derive(Default)]
+pub(crate) struct Context {
+    pub(crate) mode_enabled: bool,
+    pub(crate) drive_velocity: (f32, f32),
+}
+
+pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut state::Context) {
+    let telemetry = &ui_state.snapshot.latest_telemetry;
+    let connection = &ui_state.snapshot.connection;
+    let last_error = ui_state.last_error.clone();
+    let mode_enabled = context.mode_enabled;
+    let drive_velocity = context.drive_velocity;
     let connected = matches!(connection, ConnectionStatus::Connected { .. });
 
-    if let Some(error) = last_error {
+    if let Some(error) = last_error.as_deref() {
         ui.raw(|raw_ui| raw_ui.colored_label(egui::Color32::LIGHT_RED, error));
     }
 
@@ -98,26 +104,60 @@ pub(crate) fn render(
 
     let drive_changed = target_velocity != drive_velocity;
     if mode_changed && !new_mode_enabled && drive_changed {
-        actions.push(pubsub::Message::Control(pubsub::Control {
-            left: units::AngularVelocity::new(target_velocity.0),
-            right: units::AngularVelocity::new(target_velocity.1),
-        }));
+        send_message(
+            context,
+            ui_state,
+            pubsub::Message::Control(pubsub::Control {
+                timestamp: units::Time::new(0.0),
+                left: units::AngularVelocity::new(target_velocity.0),
+                right: units::AngularVelocity::new(target_velocity.1),
+            }),
+        );
     }
     if mode_changed {
-        actions.push(if new_mode_enabled {
-            pubsub::Message::EnableControlMode
-        } else {
-            pubsub::Message::DisableControlMode
-        });
+        send_message(
+            context,
+            ui_state,
+            if new_mode_enabled {
+                pubsub::Message::EnableControlMode
+            } else {
+                pubsub::Message::DisableControlMode
+            },
+        );
     }
     if drive_changed && !(mode_changed && !new_mode_enabled) {
-        actions.push(pubsub::Message::Control(pubsub::Control {
-            left: units::AngularVelocity::new(target_velocity.0),
-            right: units::AngularVelocity::new(target_velocity.1),
-        }));
+        send_message(
+            context,
+            ui_state,
+            pubsub::Message::Control(pubsub::Control {
+                timestamp: units::Time::new(0.0),
+                left: units::AngularVelocity::new(target_velocity.0),
+                right: units::AngularVelocity::new(target_velocity.1),
+            }),
+        );
+    }
+}
+
+fn send_message(context: &mut Context, ui_state: &mut state::Context, message: pubsub::Message) {
+    match ui_state
+        .worker
+        .command(WorkerCommand::PubSub(message.clone()))
+    {
+        Ok(()) => ui_state.last_error = None,
+        Err(error) => {
+            ui_state.last_error = Some(error);
+            return;
+        }
     }
 
-    actions
+    match message {
+        pubsub::Message::EnableControlMode => context.mode_enabled = true,
+        pubsub::Message::DisableControlMode => context.mode_enabled = false,
+        pubsub::Message::Control(control) => {
+            context.drive_velocity = (control.left.into(), control.right.into());
+        }
+        _ => {}
+    }
 }
 
 fn directional_button(

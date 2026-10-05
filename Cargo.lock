@@ -2498,6 +2498,7 @@ dependencies = [
  "egui_extras",
  "mdns-sd",
  "mote-api",
+ "postcard",
  "sci-units",
 ]
 

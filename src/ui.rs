@@ -1,12 +1,12 @@
+use crate::{
+    connection, control, mission, settings,
+    state::{self, UiAction},
+    telemetry,
+    transport::ConnectionStatus,
+};
 use bee_ui::{
     UiRoot,
     prelude::{Badge, Button, Container, HStack, SvgIcon},
-};
-use mote_api::messages::pubsub;
-
-use crate::{
-    connection, control, mission, settings, telemetry,
-    transport::{ConnectionStatus, WorkerSnapshot},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,26 +48,21 @@ impl ControlPanel {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum UiAction {
-    SelectPanel(ControlPanel),
-    Refresh,
-    SelectDevice(String),
-    Connect(String),
-    Disconnect,
-    PubSub(pubsub::Message),
+pub(crate) struct Context {
+    pub(crate) connection: connection::Context,
+    pub(crate) control: control::Context,
+    pub(crate) mission: mission::Context,
+    pub(crate) telemetry: telemetry::Context,
+    pub(crate) settings: settings::Context,
 }
 
 pub(crate) fn render(
     ui: &mut UiRoot<'_>,
-    snapshot: &WorkerSnapshot,
-    selected_device: Option<&str>,
-    last_error: Option<&str>,
-    active_panel: ControlPanel,
-    refreshing_devices: bool,
-    mode_enabled: bool,
-    drive_velocity: (f32, f32),
+    context: &mut Context,
+    ui_state: &mut state::Context,
 ) -> Vec<UiAction> {
+    let connection = ui_state.snapshot.connection.clone();
+    let active_panel = ui_state.active_panel;
     let mut actions = Vec::new();
     let mut container = Container::fluid().props().fill_height();
     if !matches!(
@@ -89,7 +84,7 @@ pub(crate) fn render(
                     actions.push(UiAction::SelectPanel(panel));
                 }
             }
-            match &snapshot.connection {
+            match &connection {
                 ConnectionStatus::Disconnected => {
                     ui.badge(Badge::secondary("Disconnected").as_pill());
                 }
@@ -107,35 +102,16 @@ pub(crate) fn render(
 
         match active_panel {
             ControlPanel::Connection => {
-                actions.extend(connection::render(
-                    ui,
-                    snapshot,
-                    selected_device,
-                    last_error,
-                    refreshing_devices,
-                ));
+                actions.extend(connection::render(ui, &mut context.connection, ui_state));
             }
             ControlPanel::Control => {
-                actions.extend(
-                    control::render(
-                        ui,
-                        &snapshot.latest_telemetry,
-                        &snapshot.connection,
-                        last_error,
-                        mode_enabled,
-                        drive_velocity,
-                    )
-                    .into_iter()
-                    .map(UiAction::PubSub),
-                );
+                control::render(ui, &mut context.control, ui_state);
             }
-            ControlPanel::Mission => mission::render(ui),
+            ControlPanel::Mission => mission::render(ui, &mut context.mission),
             ControlPanel::Telemetry => {
-                if let Some(message) = telemetry::render(ui, &snapshot.latest_telemetry) {
-                    actions.push(UiAction::PubSub(message));
-                }
+                telemetry::render(ui, &mut context.telemetry, ui_state);
             }
-            ControlPanel::Settings => settings::render(ui),
+            ControlPanel::Settings => settings::render(ui, &mut context.settings),
         }
     });
 

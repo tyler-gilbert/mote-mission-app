@@ -7,19 +7,22 @@ use bee_ui::{
 };
 
 use crate::{
-    transport::{ConnectionStatus, DiscoveredDevice, WorkerSnapshot},
-    ui::UiAction,
+    state::{self, UiAction},
+    transport::{ConnectionStatus, DiscoveredDevice},
 };
 
-pub(crate) fn reconcile_selected_device(
-    devices: &[DiscoveredDevice],
-    selected: &mut Option<String>,
-) {
-    if selected
+#[derive(Default)]
+pub(crate) struct Context {
+    pub(crate) selected_device: Option<String>,
+}
+
+pub(crate) fn reconcile_selected_device(devices: &[DiscoveredDevice], context: &mut Context) {
+    if context
+        .selected_device
         .as_deref()
         .is_some_and(|fullname| find_selected_device(devices, Some(fullname)).is_none())
     {
-        *selected = None;
+        context.selected_device = None;
     }
 }
 
@@ -35,11 +38,13 @@ fn find_selected_device<'a>(
 
 pub(crate) fn render(
     ui: &mut UiRoot<'_>,
-    snapshot: &WorkerSnapshot,
-    selected_device: Option<&str>,
-    last_error: Option<&str>,
-    refreshing_devices: bool,
+    context: &mut Context,
+    ui_state: &state::Context,
 ) -> Vec<UiAction> {
+    let snapshot = &ui_state.snapshot;
+    let last_error = ui_state.last_error.as_deref();
+    let refreshing_devices = ui_state.refreshing_devices;
+    let selected_device = context.selected_device.as_deref();
     let mut actions = Vec::new();
 
     ui.label(Label::new("Connection").large());
@@ -217,22 +222,26 @@ mod tests {
     #[test]
     fn selection_is_cleared_when_device_disappears() {
         let devices = [discovered_device("mote-2._mote-api._udp.local.")];
-        let mut selected = Some("mote-1._mote-api._udp.local.".to_owned());
+        let mut context = Context {
+            selected_device: Some("mote-1._mote-api._udp.local.".to_owned()),
+        };
 
-        reconcile_selected_device(&devices, &mut selected);
+        reconcile_selected_device(&devices, &mut context);
 
-        assert_eq!(selected, None);
+        assert_eq!(context.selected_device, None);
     }
 
     #[test]
     fn selection_is_retained_while_device_remains_discovered() {
         let fullname = "mote-1._mote-api._udp.local.";
         let devices = [discovered_device(fullname)];
-        let mut selected = Some(fullname.to_owned());
+        let mut context = Context {
+            selected_device: Some(fullname.to_owned()),
+        };
 
-        reconcile_selected_device(&devices, &mut selected);
+        reconcile_selected_device(&devices, &mut context);
 
-        assert_eq!(selected.as_deref(), Some(fullname));
+        assert_eq!(context.selected_device.as_deref(), Some(fullname));
     }
 
     #[test]

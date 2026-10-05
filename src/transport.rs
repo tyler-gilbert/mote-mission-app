@@ -21,20 +21,40 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Clone, Default)]
 pub(crate) struct LatestTelemetry {
     pub guidance: Option<pubsub::Guidance>,
+    pub guidance_received_at: Option<Instant>,
     pub position: Option<pubsub::Position>,
+    pub position_received_at: Option<Instant>,
     pub control: Option<pubsub::Control>,
+    pub control_received_at: Option<Instant>,
     pub imu: Option<pubsub::Imu>,
+    pub imu_received_at: Option<Instant>,
     pub lidar_scan: Option<pubsub::Scan>,
+    pub lidar_scan_received_at: Option<Instant>,
 }
 
 impl LatestTelemetry {
     pub(crate) fn update_pubsub(&mut self, message: pubsub::Message) -> bool {
         match message {
-            pubsub::Message::Guidance(value) => self.guidance = Some(value),
-            pubsub::Message::Position(value) => self.position = Some(value),
-            pubsub::Message::Control(value) => self.control = Some(value),
-            pubsub::Message::Imu(value) => self.imu = Some(value),
-            pubsub::Message::LidarScan(value) => self.lidar_scan = Some(value),
+            pubsub::Message::Guidance(value) => {
+                self.guidance = Some(value);
+                self.guidance_received_at = Some(Instant::now());
+            }
+            pubsub::Message::Position(value) => {
+                self.position = Some(value);
+                self.position_received_at = Some(Instant::now());
+            }
+            pubsub::Message::Control(value) => {
+                self.control = Some(value);
+                self.control_received_at = Some(Instant::now());
+            }
+            pubsub::Message::Imu(value) => {
+                self.imu = Some(value);
+                self.imu_received_at = Some(Instant::now());
+            }
+            pubsub::Message::LidarScan(value) => {
+                self.lidar_scan = Some(value);
+                self.lidar_scan_received_at = Some(Instant::now());
+            }
             _ => return false,
         }
         true
@@ -658,6 +678,7 @@ fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> pubsub::Scan {
     let mut converted = pubsub::Scan::new();
     for reading in scan {
         let point = pubsub::ScanPoint {
+            timestamp: units::Time::new(0.0),
             quality: reading.quality,
             angle: units::PlaneAngle::new(reading.angle_rad),
             distance: units::Length::new(reading.distance_mm / 1_000.0),

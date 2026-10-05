@@ -1,37 +1,31 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    fs::{File, OpenOptions},
+    io::{self, BufWriter, Write},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bee_ui::{
     UiRoot,
     prelude::{
-        PlotPoint, ScatterControlPanel, ScatterDataset, ScatterPlot, ScatterPlotProps,
-        ScatterPoint, ScatterSeries, TimeSeries, TimeSeriesDataset, TimeSeriesPlotProps,
-        ViewportState,
+        Button, DisclosureState, Dropdown, DropdownItem, HStack, PlotPoint, SvgIcon, TimeSeries,
+        TimeSeriesDataset, TimeSeriesPlotProps, ViewportState,
     },
 };
-use eframe::egui;
 use mote_api::messages::pubsub;
+mod imu;
+mod lidar;
 
-use crate::transport::LatestTelemetry;
+use crate::{
+    state,
+    transport::{ConnectionStatus, WorkerCommand},
+};
 
 const GUIDANCE_PLOT_ID: &str = "mote.telemetry.guidance";
 const POSITION_PLOT_ID: &str = "mote.telemetry.position";
 const CONTROL_PLOT_ID: &str = "mote.telemetry.control";
-const IMU_PLOT_ID: &str = "mote.telemetry.imu";
-const LIDAR_PLOT_ID: &str = "mote.telemetry.lidar";
+
 const PLOT_CONTROLS_HEIGHT: f32 = 160.0;
-const IMU_POINT_CAPACITY: usize = 10_000;
-const IMU_HISTORY_ID: &str = "mote.telemetry.imu.history";
-const IMU_SERIES: [(&str, &str); 6] = [
-    ("acceleration_x", "Acceleration X"),
-    ("acceleration_y", "Acceleration Y"),
-    ("acceleration_z", "Acceleration Z"),
-    ("angular_acceleration_x", "Angular acceleration X"),
-    ("angular_acceleration_y", "Angular acceleration Y"),
-    ("angular_acceleration_z", "Angular acceleration Z"),
-];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TelemetryPlot {
@@ -71,116 +65,338 @@ impl TelemetryPlot {
             Self::Lidar => pubsub::TelemetrySelection::Lidar,
         }
     }
+
+    const fn file_type(self) -> &'static str {
+        match self {
+            Self::Guidance => "guidance",
+            Self::Position => "navigation",
+            Self::Control => "control",
+            Self::Imu => "imu",
+            Self::Lidar => "lidar",
+        }
+    }
 }
 
-pub(crate) fn render(ui: &mut UiRoot<'_>, telemetry: &LatestTelemetry) -> Option<pubsub::Message> {
-    let context = ui.context().clone();
-    let selection_id = egui::Id::new("mote.telemetry.selected_plot");
-    let previous_plot = context.data_mut(|data| data.get_temp::<TelemetryPlot>(selection_id));
+struct TelemetryRecorder {
+    plot: TelemetryPlot,
+    writer: BufWriter<File>,
+    last_sample_time: Option<Instant>,
+}
+
+impl TelemetryRecorder {
+    fn create(plot: TelemetryPlot) -> io::Result<Self> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_millis();
+        let filename = format!("{}_{}.data", plot.file_type(), timestamp);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(filename)?;
+
+        Ok(Self {
+            plot,
+            writer: BufWriter::new(file),
+            last_sample_time: None,
+        })
+    }
+
+    fn write_sample(&mut self, received_at: Instant, message: &pubsub::Message) -> io::Result<()> {
+        if self
+            .last_sample_time
+            .is_some_and(|last_sample_time| received_at <= last_sample_time)
+        {
+            return Ok(());
+        }
+
+        let encoded = postcard::to_allocvec(message).map_err(io::Error::other)?;
+        let encoded_len = u32::try_from(encoded.len())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        // Frame concatenated Postcard messages so a reader can decode them sequentially.
+        self.writer.write_all(&encoded_len.to_le_bytes())?;
+        self.writer.write_all(&encoded)?;
+        self.writer.flush()?;
+        self.last_sample_time = Some(received_at);
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+fn selected_sample(
+    plot: TelemetryPlot,
+    telemetry: &crate::transport::LatestTelemetry,
+) -> Option<(Instant, pubsub::Message)> {
+    match plot {
+        TelemetryPlot::Guidance => Some((
+            telemetry.guidance_received_at?,
+            pubsub::Message::Guidance(telemetry.guidance.as_ref()?.clone()),
+        )),
+        TelemetryPlot::Position => Some((
+            telemetry.position_received_at?,
+            pubsub::Message::Position(telemetry.position.as_ref()?.clone()),
+        )),
+        TelemetryPlot::Control => Some((
+            telemetry.control_received_at?,
+            pubsub::Message::Control(telemetry.control.as_ref()?.clone()),
+        )),
+        TelemetryPlot::Imu => Some((
+            telemetry.imu_received_at?,
+            pubsub::Message::Imu(telemetry.imu.as_ref()?.clone()),
+        )),
+        TelemetryPlot::Lidar => Some((
+            telemetry.lidar_scan_received_at?,
+            pubsub::Message::LidarScan(telemetry.lidar_scan.as_ref()?.clone()),
+        )),
+    }
+}
+
+pub(crate) struct Context {
+    selected_plot: Option<TelemetryPlot>,
+    guidance: LivePlotContext,
+    position: LivePlotContext,
+    control: LivePlotContext,
+    imu: imu::Context,
+    lidar: lidar::Context,
+    recorder: Option<TelemetryRecorder>,
+    recording_error: Option<String>,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            selected_plot: None,
+            guidance: LivePlotContext::new(2),
+            position: LivePlotContext::new(3),
+            control: LivePlotContext::new(2),
+            imu: imu::Context::default(),
+            lidar: lidar::Context::default(),
+            recorder: None,
+            recording_error: None,
+        }
+    }
+}
+
+pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut state::Context) {
+    let previous_plot = context.selected_plot;
     let mut selected_plot = previous_plot.unwrap_or_default();
 
-    let plot_height = ui.raw(|raw_ui| {
-        egui::ComboBox::from_id_salt("mote.telemetry.plot_selector")
-            .selected_text(selected_plot.label())
-            .show_ui(raw_ui, |combo_ui| {
-                for plot in TelemetryPlot::ALL {
-                    combo_ui.selectable_value(&mut selected_plot, plot, plot.label());
-                }
+    let plot_selector =
+        TelemetryPlot::ALL
+            .iter()
+            .fold(Dropdown::new(selected_plot.label()), |dropdown, plot| {
+                dropdown.item(DropdownItem::new(plot.label()).active(*plot == selected_plot))
             });
-
-        (raw_ui.available_height() - PLOT_CONTROLS_HEIGHT).max(0.0)
+    let (clicked_index, record_clicked) = ui.hstack(HStack::new(), |ui| {
+        let clicked_index = ui
+            .dropdown(
+                DisclosureState::uncontrolled("mote.telemetry.plot_selector", false),
+                plot_selector,
+            )
+            .clicked_index();
+        let record_button = if ui_state.is_record_telemetry {
+            Button::warning("Stop")
+                .icon(SvgIcon::SquareFill)
+                .hover_text("Stop recording telemetry")
+        } else {
+            Button::danger("Record")
+                .icon(SvgIcon::CircleFill)
+                .hover_text("Record telemetry to a log file")
+        };
+        (clicked_index, ui.button(record_button).clicked())
     });
 
+    if let Some(index) = clicked_index {
+        selected_plot = TelemetryPlot::ALL[index];
+    }
+
+    if record_clicked {
+        if ui_state.is_record_telemetry {
+            ui_state.is_record_telemetry = false;
+            context.recording_error = None;
+            if let Some(recorder) = context.recorder.take()
+                && let Err(error) = recorder.finish()
+            {
+                context.recording_error = Some(format!("Could not finish telemetry log: {error}"));
+            }
+        } else {
+            match TelemetryRecorder::create(selected_plot) {
+                Ok(recorder) => {
+                    context.recorder = Some(recorder);
+                    context.recording_error = None;
+                    ui_state.is_record_telemetry = true;
+                }
+                Err(error) => {
+                    context.recording_error =
+                        Some(format!("Could not start telemetry log: {error}"));
+                }
+            }
+        }
+    }
+
+    if previous_plot != Some(selected_plot) {
+        let selection = selected_plot.telemetry_selection();
+        ui_state.telemetry_selection = selection.clone();
+        ui_state.telemetry_panel_setup_sent = false;
+
+        if matches!(
+            ui_state.snapshot.connection,
+            ConnectionStatus::Connected { .. }
+        ) {
+            match ui_state.worker.command(WorkerCommand::PubSub(
+                pubsub::Message::TelemetrySelection(selection),
+            )) {
+                Ok(()) => {
+                    ui_state.telemetry_panel_setup_sent = true;
+                    ui_state.last_error = None;
+                }
+                Err(error) => ui_state.last_error = Some(error),
+            }
+        }
+    }
+
+    record_active_telemetry(context, selected_plot, ui_state);
+    if let Some(error) = context.recording_error.as_deref() {
+        ui.raw(|raw_ui| raw_ui.colored_label(eframe::egui::Color32::RED, error));
+    }
+
+    let telemetry = &ui_state.snapshot.latest_telemetry;
+    let plot_height = ui.raw(|raw_ui| (raw_ui.available_height() - PLOT_CONTROLS_HEIGHT).max(0.0));
+
     match selected_plot {
-        TelemetryPlot::Guidance => render_empty_plot(
+        TelemetryPlot::Guidance => render_live_plot(
             ui,
+            &mut context.guidance,
             GUIDANCE_PLOT_ID,
-            &["Heading", "Distance"],
+            &[("heading", "Heading"), ("distance", "Distance")],
+            telemetry.guidance.as_ref().map(|value| {
+                [
+                    quantity_value(value.heading),
+                    quantity_value(value.distance),
+                ]
+            }),
+            telemetry.guidance_received_at,
+            "Guidance",
             "Value",
             plot_height,
         ),
-        TelemetryPlot::Position => render_empty_plot(
+        TelemetryPlot::Position => render_live_plot(
             ui,
+            &mut context.position,
             POSITION_PLOT_ID,
-            &["North", "East", "Heading"],
+            &[("north", "North"), ("east", "East"), ("heading", "Heading")],
+            telemetry.position.as_ref().map(|value| {
+                [
+                    quantity_value(value.north),
+                    quantity_value(value.east),
+                    quantity_value(value.heading),
+                ]
+            }),
+            telemetry.position_received_at,
+            "Navigation",
             "Value",
             plot_height,
         ),
-        TelemetryPlot::Control => render_empty_plot(
+        TelemetryPlot::Control => render_live_plot(
             ui,
+            &mut context.control,
             CONTROL_PLOT_ID,
-            &["Left", "Right"],
+            &[("left", "Left"), ("right", "Right")],
+            telemetry
+                .control
+                .as_ref()
+                .map(|value| [quantity_value(value.left), quantity_value(value.right)]),
+            telemetry.control_received_at,
+            "Control",
             "Angular velocity",
             plot_height,
         ),
-        TelemetryPlot::Imu => {
-            render_imu_plot(ui, telemetry.imu.as_ref(), plot_height);
+        TelemetryPlot::Imu => imu::render(ui, &mut context.imu, ui_state, plot_height),
+        TelemetryPlot::Lidar => {
+            lidar::render(ui, &mut context.lidar, ui_state, plot_height);
         }
-        TelemetryPlot::Lidar => render_lidar_plot(ui, telemetry.lidar_scan.as_ref(), plot_height),
     }
 
-    context.data_mut(|data| data.insert_temp(selection_id, selected_plot));
-
-    (previous_plot != Some(selected_plot))
-        .then(|| pubsub::Message::TelemetrySelection(selected_plot.telemetry_selection()))
+    context.selected_plot = Some(selected_plot);
 }
 
-fn render_lidar_plot(ui: &mut UiRoot<'_>, scan: Option<&pubsub::Scan>, height: f32) {
-    let dataset = lidar_dataset(scan);
-    let props = ScatterPlotProps::new(LIDAR_PLOT_ID)
-        .title("LiDAR scan")
-        .axis_labels("X (mm)", "Y (mm)")
-        .height(height)
-        .fill_width(true);
+fn record_active_telemetry(
+    context: &mut Context,
+    plot: TelemetryPlot,
+    ui_state: &mut state::Context,
+) {
+    if !ui_state.is_record_telemetry {
+        return;
+    }
 
-    let context = ui.context().clone();
-    let viewport_id = egui::Id::new(("mote.telemetry.viewport", LIDAR_PLOT_ID));
-    let mut viewport = context
-        .data_mut(|data| data.get_temp::<ViewportState>(viewport_id))
-        .unwrap_or_default();
-
-    ui.raw(|raw_ui| {
-        ScatterPlot::show_with_viewport(raw_ui, &props, &dataset, &mut viewport);
-        raw_ui.push_id("mote.telemetry.lidar.controls", |scoped_ui| {
-            ScatterControlPanel::show(scoped_ui, &mut viewport, &dataset);
-        });
-        if dataset.is_empty() {
-            raw_ui.label("Waiting for LiDAR scan…");
+    if context
+        .recorder
+        .as_ref()
+        .is_none_or(|recorder| recorder.plot != plot)
+    {
+        if let Some(recorder) = context.recorder.take()
+            && let Err(error) = recorder.finish()
+        {
+            context.recording_error = Some(format!("Could not finish telemetry log: {error}"));
         }
-    });
 
-    context.data_mut(|data| data.insert_temp(viewport_id, viewport));
+        match TelemetryRecorder::create(plot) {
+            Ok(recorder) => context.recorder = Some(recorder),
+            Err(error) => {
+                ui_state.is_record_telemetry = false;
+                context.recording_error = Some(format!("Could not start telemetry log: {error}"));
+                return;
+            }
+        }
+    }
+
+    if let Some((received_at, message)) = selected_sample(plot, &ui_state.snapshot.latest_telemetry)
+        && let Some(recorder) = context.recorder.as_mut()
+        && let Err(error) = recorder.write_sample(received_at, &message)
+    {
+        ui_state.is_record_telemetry = false;
+        context.recorder = None;
+        context.recording_error = Some(format!("Could not write telemetry log: {error}"));
+    }
 }
 
-fn lidar_dataset(scan: Option<&pubsub::Scan>) -> ScatterDataset {
-    let points = scan
-        .into_iter()
-        .flat_map(|scan| scan.iter())
-        .filter_map(|reading| {
-            let angle: f32 = reading.angle.into();
-            let distance: f32 = reading.distance.into();
-            let angle = f64::from(angle);
-            let distance = f64::from(distance) * 1_000.0;
-            (angle.is_finite() && distance.is_finite() && distance > 0.0)
-                .then(|| ScatterPoint::new(distance * angle.cos(), distance * angle.sin()))
-        })
-        .collect();
+const PLOT_POINT_CAPACITY: usize = 10_000;
 
-    ScatterDataset::new(vec![
-        ScatterSeries::new("mote.telemetry.lidar.returns", "Returns").with_points(points),
-    ])
+#[derive(Default)]
+struct LivePlotContext {
+    history: LivePlotHistory,
+    viewport: ViewportState,
+}
+
+impl LivePlotContext {
+    fn new(series_count: usize) -> Self {
+        Self {
+            history: LivePlotHistory::new(series_count),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Default)]
-struct ImuPlotHistory {
-    series: [VecDeque<PlotPoint>; 6],
-    start_time: Option<f64>,
-    last_sample_time: Option<f64>,
+struct LivePlotHistory {
+    series: Vec<VecDeque<PlotPoint>>,
+    start_time: Option<Instant>,
+    last_sample_time: Option<Instant>,
 }
 
-impl ImuPlotHistory {
-    fn push_sample(&mut self, imu: &pubsub::Imu, timestamp: f64) {
-        if !timestamp.is_finite()
+impl LivePlotHistory {
+    fn new(series_count: usize) -> Self {
+        Self {
+            series: (0..series_count).map(|_| VecDeque::new()).collect(),
+            ..Self::default()
+        }
+    }
+
+    fn push_sample(&mut self, timestamp: Instant, values: &[f64]) {
+        if self.series.len() != values.len()
             || self
                 .last_sample_time
                 .is_some_and(|last_sample_time| timestamp <= last_sample_time)
@@ -189,23 +405,26 @@ impl ImuPlotHistory {
         }
 
         let start_time = *self.start_time.get_or_insert(timestamp);
-        let sample_time = timestamp - start_time;
-        for (points, value) in self.series.iter_mut().zip(imu_values(imu)) {
-            if points.len() == IMU_POINT_CAPACITY {
+        let sample_time = timestamp.duration_since(start_time).as_secs_f64();
+        for (points, value) in self.series.iter_mut().zip(values) {
+            if !value.is_finite() {
+                continue;
+            }
+            if points.len() == PLOT_POINT_CAPACITY {
                 points.pop_front();
             }
-            points.push_back(PlotPoint::new(sample_time, value));
+            points.push_back(PlotPoint::new(sample_time, *value));
         }
         self.last_sample_time = Some(timestamp);
     }
 
-    fn dataset(&self) -> TimeSeriesDataset {
+    fn dataset(&self, id: &str, series: &[(&str, &str)]) -> TimeSeriesDataset {
         TimeSeriesDataset::new(
-            IMU_SERIES
+            series
                 .iter()
                 .zip(&self.series)
-                .map(|((id, label), points)| {
-                    TimeSeries::new(format!("{IMU_PLOT_ID}.{id}"), *label)
+                .map(|((series_id, label), points)| {
+                    TimeSeries::new(format!("{id}.{series_id}"), *label)
                         .with_points(points.iter().copied().collect())
                 })
                 .collect(),
@@ -213,70 +432,36 @@ impl ImuPlotHistory {
     }
 }
 
-fn imu_values(imu: &pubsub::Imu) -> [f64; 6] {
-    let acceleration_x: f32 = imu.accel.x.into();
-    let acceleration_y: f32 = imu.accel.y.into();
-    let acceleration_z: f32 = imu.accel.z.into();
-    let angular_acceleration_x: f32 = imu.gyro.x.into();
-    let angular_acceleration_y: f32 = imu.gyro.y.into();
-    let angular_acceleration_z: f32 = imu.gyro.z.into();
-    [
-        f64::from(acceleration_x),
-        f64::from(acceleration_y),
-        f64::from(acceleration_z),
-        f64::from(angular_acceleration_x),
-        f64::from(angular_acceleration_y),
-        f64::from(angular_acceleration_z),
-    ]
+fn quantity_value(quantity: impl Into<f32>) -> f64 {
+    f64::from(quantity.into())
 }
 
-fn render_imu_plot(ui: &mut UiRoot<'_>, imu: Option<&pubsub::Imu>, height: f32) {
-    let context = ui.context().clone();
-    let history_id = egui::Id::new(IMU_HISTORY_ID);
-    let history = context.data_mut(|data| {
-        data.get_temp::<Arc<Mutex<ImuPlotHistory>>>(history_id)
-            .unwrap_or_else(|| {
-                let history = Arc::new(Mutex::new(ImuPlotHistory::default()));
-                data.insert_temp(history_id, history.clone());
-                history
-            })
-    });
-
-    let timestamp = context.input(|input| input.time);
-    let mut history = history
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(imu) = imu {
-        history.push_sample(imu, timestamp);
-    }
-    let dataset = history.dataset();
-    drop(history);
-
-    let waiting_for_data = dataset.is_empty();
-    render_time_series_plot(ui, IMU_PLOT_ID, &dataset, "Sensor reading", height);
-    if waiting_for_data {
-        ui.raw(|raw_ui| raw_ui.label("Waiting for IMU telemetry…"));
-    }
-}
-
-fn render_empty_plot(
+fn render_live_plot<const SERIES_COUNT: usize>(
     ui: &mut UiRoot<'_>,
+    context: &mut LivePlotContext,
     id: &'static str,
-    series: &[&str],
+    series: &[(&str, &str)],
+    values: Option<[f64; SERIES_COUNT]>,
+    received_at: Option<Instant>,
+    waiting_for: &str,
     y_axis: &str,
     height: f32,
 ) {
-    let dataset = TimeSeriesDataset::new(
-        series
-            .iter()
-            .map(|label| TimeSeries::new(format!("{id}.{label}"), *label))
-            .collect(),
-    );
-    render_time_series_plot(ui, id, &dataset, y_axis, height);
+    if let (Some(values), Some(received_at)) = (values, received_at) {
+        context.history.push_sample(received_at, &values);
+    }
+
+    let dataset = context.history.dataset(id, series);
+    let waiting_for_data = dataset.is_empty();
+    render_time_series_plot(ui, &mut context.viewport, id, &dataset, y_axis, height);
+    if waiting_for_data {
+        ui.raw(|raw_ui| raw_ui.label(format!("Waiting for {waiting_for} telemetry…")));
+    }
 }
 
-fn render_time_series_plot(
+pub(super) fn render_time_series_plot(
     ui: &mut UiRoot<'_>,
+    viewport: &mut ViewportState,
     id: &'static str,
     dataset: &TimeSeriesDataset,
     y_axis: &str,
@@ -289,20 +474,32 @@ fn render_time_series_plot(
         .legend(true)
         .show_control_panel(true);
 
-    let context = ui.context().clone();
-    let viewport_id = egui::Id::new(("mote.telemetry.viewport", id));
-    let mut viewport = context
-        .data_mut(|data| data.get_temp::<ViewportState>(viewport_id))
-        .unwrap_or_default();
-
-    ui.time_series_plot(props, dataset, &mut viewport);
-
-    context.data_mut(|data| data.insert_temp(viewport_id, viewport));
+    ui.time_series_plot(props, dataset, viewport);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn live_plot_history_uses_arrival_times_and_ignores_repeated_snapshots() {
+        let mut history = LivePlotHistory::new(2);
+        let start_time = Instant::now();
+        history.push_sample(start_time, &[1.0, 2.0]);
+        history.push_sample(start_time + Duration::from_millis(250), &[3.0, 4.0]);
+        history.push_sample(start_time + Duration::from_millis(250), &[5.0, 6.0]);
+
+        let dataset = history.dataset(
+            "mote.telemetry.test",
+            &[("left", "Left"), ("right", "Right")],
+        );
+        assert_eq!(dataset.series.len(), 2);
+        assert_eq!(dataset.series[0].points.len(), 2);
+        assert_eq!(dataset.series[0].points[0], PlotPoint::new(0.0, 1.0));
+        assert_eq!(dataset.series[0].points[1], PlotPoint::new(0.25, 3.0));
+        assert_eq!(dataset.series[1].points[1], PlotPoint::new(0.25, 4.0));
+    }
 
     #[test]
     fn plots_request_the_matching_pubsub_telemetry() {
@@ -326,150 +523,5 @@ mod tests {
             TelemetryPlot::Lidar.telemetry_selection(),
             pubsub::TelemetrySelection::Lidar
         ));
-    }
-
-    fn sample_imu(values: [f32; 6]) -> pubsub::Imu {
-        pubsub::Imu {
-            accel: pubsub::Accel {
-                x: units::Acceleration::new(values[0]),
-                y: units::Acceleration::new(values[1]),
-                z: units::Acceleration::new(values[2]),
-            },
-            gyro: pubsub::Gyro {
-                x: units::AngularAcceleration::new(values[3]),
-                y: units::AngularAcceleration::new(values[4]),
-                z: units::AngularAcceleration::new(values[5]),
-            },
-        }
-    }
-
-    #[test]
-    fn imu_history_collects_six_series_of_timestamped_samples() {
-        let mut history = ImuPlotHistory::default();
-        assert_eq!(history.dataset().series.len(), 6);
-
-        let first_sample = sample_imu([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let second_sample = sample_imu([7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-        history.push_sample(&first_sample, 4.0);
-        history.push_sample(&second_sample, 4.25);
-
-        let dataset = history.dataset();
-        assert_eq!(dataset.series.len(), 6);
-        assert_eq!(
-            dataset
-                .series
-                .iter()
-                .map(|series| series.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "Acceleration X",
-                "Acceleration Y",
-                "Acceleration Z",
-                "Angular acceleration X",
-                "Angular acceleration Y",
-                "Angular acceleration Z",
-            ]
-        );
-        for (series, expected_value) in dataset.series.iter().zip([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) {
-            assert_eq!(series.points.len(), 2);
-            assert_eq!(series.points[0].y, expected_value);
-            assert_eq!(series.points[1].y, expected_value + 6.0);
-            assert_eq!(series.points[0].x, 0.0);
-            assert_eq!(series.points[1].x, 0.25);
-        }
-    }
-
-    #[test]
-    fn imu_history_keeps_the_latest_ten_thousand_points_per_series() {
-        let mut history = ImuPlotHistory::default();
-        for index in 0..=IMU_POINT_CAPACITY {
-            let value = index as f32;
-            history.push_sample(&sample_imu([value; 6]), index as f64);
-        }
-
-        let dataset = history.dataset();
-        assert_eq!(dataset.series.len(), 6);
-        for series in &dataset.series {
-            assert_eq!(series.points.len(), IMU_POINT_CAPACITY);
-            assert_eq!(series.points[0].x, 1.0);
-            assert_eq!(series.points[0].y, 1.0);
-            assert_eq!(
-                series.points[IMU_POINT_CAPACITY - 1].x,
-                IMU_POINT_CAPACITY as f64
-            );
-            assert_eq!(
-                series.points[IMU_POINT_CAPACITY - 1].y,
-                IMU_POINT_CAPACITY as f64
-            );
-        }
-    }
-
-    #[test]
-    fn lidar_scan_pubsub_messages_update_the_shared_telemetry() {
-        let mut scan = pubsub::Scan::new();
-        assert!(
-            scan.push(pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(0.0),
-                distance: units::Length::new(1.0),
-            })
-            .is_ok()
-        );
-
-        let mut telemetry = LatestTelemetry::default();
-        assert!(telemetry.update_pubsub(pubsub::Message::LidarScan(scan.clone())));
-        //assert_eq!(telemetry.lidar_scan.as_ref(), Some(&scan));
-    }
-
-    #[test]
-    fn lidar_scan_coordinates_are_added_to_the_scatter_dataset() {
-        let scan = pubsub::Scan::from_slice(&[
-            pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(0.0),
-                distance: units::Length::new(1.0),
-            },
-            pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(std::f32::consts::FRAC_PI_2),
-                distance: units::Length::new(0.5),
-            },
-        ])
-        .expect("scan fits in pubsub::Scan");
-
-        let dataset = lidar_dataset(Some(&scan));
-        let points = &dataset.series[0].points;
-
-        assert_eq!(points.len(), 2);
-        assert!((points[0].x - 1_000.0).abs() < 1e-6);
-        assert!(points[0].y.abs() < 1e-6);
-        assert!(points[1].x.abs() < 1e-4);
-        assert!((points[1].y - 500.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn lidar_scan_ignores_invalid_ranges_and_angles() {
-        let scan = pubsub::Scan::from_slice(&[
-            pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(f32::NAN),
-                distance: units::Length::new(0.5),
-            },
-            pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(0.0),
-                distance: units::Length::new(0.0),
-            },
-            pubsub::ScanPoint {
-                quality: 1,
-                angle: units::PlaneAngle::new(0.0),
-                distance: units::Length::new(0.5),
-            },
-        ])
-        .expect("scan fits in pubsub::Scan");
-
-        let dataset = lidar_dataset(Some(&scan));
-
-        assert_eq!(dataset.series[0].points.len(), 1);
     }
 }
