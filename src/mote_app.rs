@@ -4,7 +4,7 @@ use std::{
 };
 
 use eframe::egui;
-use mote_api::messages::{host_to_mote, pubsub};
+use mote_api::messages::{host_to_mote, router};
 
 use crate::{
     connection,
@@ -34,7 +34,7 @@ impl MoteApp {
                 worker: TransportWorker::start(),
                 control_panel_setup_sent: false,
                 telemetry_panel_setup_sent: false,
-                telemetry_selection: pubsub::TelemetrySelection::Guidance,
+                telemetry_selection: router::TelemetrySelection::Guidance,
                 is_record_telemetry: false,
                 device_refresh_until: None,
                 snapshot: WorkerSnapshot {
@@ -100,13 +100,14 @@ impl MoteApp {
         }
     }
 
-    fn send_pubsub_message(&mut self, message: pubsub::Message) -> bool {
+    fn send_router_message(&mut self, message: router::Message) -> bool {
         let (mode_enabled, drive_velocity) = match &message {
-            pubsub::Message::EnableControlMode => (Some(true), None),
-            pubsub::Message::DisableControlMode => (Some(false), None),
-            pubsub::Message::Control(control) => {
-                (None, Some((control.left.into(), control.right.into())))
-            }
+            router::Message::EnableControlMode => (Some(true), None),
+            router::Message::DisableControlMode => (Some(false), None),
+            router::Message::MotorDrive(motor_drive) => (
+                None,
+                Some((motor_drive.left.into(), motor_drive.right.into())),
+            ),
             _ => (None, None),
         };
         let sent = self.send_command(WorkerCommand::PubSub(message));
@@ -190,9 +191,9 @@ impl eframe::App for MoteApp {
                 ConnectionStatus::Connected { .. }
             )
         {
-            let enable_sent = self.send_pubsub_message(pubsub::Message::EnableControlMode);
-            let telemetry_sent = self.send_pubsub_message(pubsub::Message::TelemetrySelection(
-                pubsub::TelemetrySelection::RemoteControl,
+            let enable_sent = self.send_router_message(router::Message::EnableControlMode);
+            let telemetry_sent = self.send_router_message(router::Message::TelemetrySelection(
+                router::TelemetrySelection::RemoteControl,
             ));
             self.ui_state.control_panel_setup_sent = enable_sent && telemetry_sent;
         }
@@ -203,8 +204,8 @@ impl eframe::App for MoteApp {
                 ConnectionStatus::Connected { .. }
             )
         {
-            self.ui_state.telemetry_panel_setup_sent = self.send_pubsub_message(
-                pubsub::Message::TelemetrySelection(self.ui_state.telemetry_selection.clone()),
+            self.ui_state.telemetry_panel_setup_sent = self.send_router_message(
+                router::Message::TelemetrySelection(self.ui_state.telemetry_selection.clone()),
             );
         }
         if self.ui_state.active_panel != ControlPanel::Control

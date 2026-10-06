@@ -6,7 +6,7 @@ use bee_ui::{
     },
 };
 use eframe::egui;
-use mote_api::messages::pubsub;
+use mote_api::messages::router;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -35,7 +35,7 @@ struct LidarHistoryPoint {
 }
 
 impl LidarPlotHistory {
-    fn push_scan(&mut self, scan: &pubsub::Scan, timestamp: Instant) {
+    fn push_scan(&mut self, scan: &router::Scan, timestamp: Instant) {
         if self
             .last_scan_time
             .is_some_and(|last_scan_time| timestamp <= last_scan_time)
@@ -153,9 +153,9 @@ mod tests {
 
     #[test]
     fn lidar_scan_pubsub_messages_update_the_shared_telemetry() {
-        let mut scan = pubsub::Scan::new();
+        let mut scan = router::Scan::new();
         assert!(
-            scan.push(pubsub::ScanPoint {
+            scan.push(router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: 1,
                 angle: units::PlaneAngle::new(0.0),
@@ -165,7 +165,7 @@ mod tests {
         );
 
         let mut telemetry = LatestTelemetry::default();
-        assert!(telemetry.update_pubsub(pubsub::Message::LidarScan(scan.clone())));
+        assert!(telemetry.update_router(router::Message::LidarScan(scan.clone())));
         let latest_scan = telemetry
             .lidar_scan
             .as_ref()
@@ -177,21 +177,21 @@ mod tests {
 
     #[test]
     fn lidar_scan_points_are_added_to_the_scatter_dataset() {
-        let scan = pubsub::Scan::from_slice(&[
-            pubsub::ScanPoint {
+        let scan = router::Scan::from_slice(&[
+            router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: 0,
                 angle: units::PlaneAngle::new(0.0),
                 distance: units::Length::new(1.0),
             },
-            pubsub::ScanPoint {
+            router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: u8::MAX,
                 angle: units::PlaneAngle::new(std::f32::consts::FRAC_PI_2),
                 distance: units::Length::new(0.5),
             },
         ])
-        .expect("scan fits in pubsub::Scan");
+        .expect("scan fits in router::Scan");
 
         let mut history = LidarPlotHistory::default();
         let received_at = Instant::now();
@@ -219,20 +219,20 @@ mod tests {
 
     #[test]
     fn points_from_previous_scans_are_black_and_fade_faster() {
-        let first_scan = pubsub::Scan::from_slice(&[pubsub::ScanPoint {
+        let first_scan = router::Scan::from_slice(&[router::ScanPoint {
             timestamp: units::Time::new(0.0),
             quality: u8::MAX,
             angle: units::PlaneAngle::new(0.0),
             distance: units::Length::new(1.0),
         }])
-        .expect("single point fits in pubsub::Scan");
-        let second_scan = pubsub::Scan::from_slice(&[pubsub::ScanPoint {
+        .expect("single point fits in router::Scan");
+        let second_scan = router::Scan::from_slice(&[router::ScanPoint {
             timestamp: units::Time::new(0.0),
             quality: u8::MAX,
             angle: units::PlaneAngle::new(0.0),
             distance: units::Length::new(2.0),
         }])
-        .expect("single point fits in pubsub::Scan");
+        .expect("single point fits in router::Scan");
         let first_received_at = Instant::now();
         let latest_received_at = first_received_at + Duration::from_millis(500);
 
@@ -254,27 +254,27 @@ mod tests {
 
     #[test]
     fn lidar_scan_ignores_invalid_ranges_and_angles() {
-        let scan = pubsub::Scan::from_slice(&[
-            pubsub::ScanPoint {
+        let scan = router::Scan::from_slice(&[
+            router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: 1,
                 angle: units::PlaneAngle::new(f32::NAN),
                 distance: units::Length::new(0.5),
             },
-            pubsub::ScanPoint {
+            router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: 1,
                 angle: units::PlaneAngle::new(0.0),
                 distance: units::Length::new(0.0),
             },
-            pubsub::ScanPoint {
+            router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: 1,
                 angle: units::PlaneAngle::new(0.0),
                 distance: units::Length::new(0.5),
             },
         ])
-        .expect("scan fits in pubsub::Scan");
+        .expect("scan fits in router::Scan");
 
         let mut history = LidarPlotHistory::default();
         history.push_scan(&scan, Instant::now());
@@ -289,13 +289,13 @@ mod tests {
         let start_time = Instant::now();
 
         for index in 1..=LIDAR_POINT_CAPACITY + 1 {
-            let scan = pubsub::Scan::from_slice(&[pubsub::ScanPoint {
+            let scan = router::Scan::from_slice(&[router::ScanPoint {
                 timestamp: units::Time::new(0.0),
                 quality: u8::MAX,
                 angle: units::PlaneAngle::new(0.0),
                 distance: units::Length::new(index as f32),
             }])
-            .expect("single point fits in pubsub::Scan");
+            .expect("single point fits in router::Scan");
             history.push_scan(&scan, start_time + Duration::from_secs(index as u64));
         }
 

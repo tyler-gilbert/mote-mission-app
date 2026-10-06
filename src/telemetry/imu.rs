@@ -5,7 +5,7 @@ use bee_ui::{
     prelude::{PlotPoint, TimeSeries, TimeSeriesDataset},
 };
 
-use mote_api::messages::pubsub;
+use mote_api::messages::router;
 
 use crate::state;
 
@@ -31,7 +31,7 @@ struct ImuPlotHistory {
 }
 
 impl ImuPlotHistory {
-    fn push_sample(&mut self, imu: &pubsub::Imu, timestamp: Instant) {
+    fn push_sample(&mut self, imu: &router::Imu, timestamp: Instant) {
         if self
             .last_sample_time
             .is_some_and(|last_sample_time| timestamp <= last_sample_time)
@@ -64,7 +64,7 @@ impl ImuPlotHistory {
     }
 }
 
-fn imu_values(imu: &pubsub::Imu) -> [f64; 6] {
+fn imu_values(imu: &router::Imu) -> [f64; 6] {
     let acceleration_x: f32 = imu.accel.x.into();
     let acceleration_y: f32 = imu.accel.y.into();
     let acceleration_z: f32 = imu.accel.z.into();
@@ -118,15 +118,15 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn sample_imu(values: [f32; 6]) -> pubsub::Imu {
-        pubsub::Imu {
+    fn sample_imu(values: [f32; 6]) -> router::Imu {
+        router::Imu {
             timestamp: units::Time::new(0.0),
-            accel: pubsub::Accel {
+            accel: router::Accel {
                 x: units::Acceleration::new(values[0]),
                 y: units::Acceleration::new(values[1]),
                 z: units::Acceleration::new(values[2]),
             },
-            gyro: pubsub::Gyro {
+            gyro: router::Gyro {
                 x: units::AngularAcceleration::new(values[3]),
                 y: units::AngularAcceleration::new(values[4]),
                 z: units::AngularAcceleration::new(values[5]),

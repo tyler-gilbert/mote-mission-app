@@ -9,7 +9,7 @@ use std::{
 use mdns_sd::{DaemonEvent, Receiver as MdnsReceiver, ServiceDaemon, ServiceEvent, ServiceInfo};
 use mote_api::{
     MoteLink,
-    messages::{host_to_mote, mote_to_host, pubsub},
+    messages::{host_to_mote, mote_to_host, router},
 };
 
 const SERVICE_TYPE: &str = "_mote-api._udp.local.";
@@ -20,38 +20,38 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Default)]
 pub(crate) struct LatestTelemetry {
-    pub guidance: Option<pubsub::Guidance>,
+    pub guidance: Option<router::Guidance>,
     pub guidance_received_at: Option<Instant>,
-    pub position: Option<pubsub::Position>,
+    pub position: Option<router::Position>,
     pub position_received_at: Option<Instant>,
-    pub control: Option<pubsub::Control>,
+    pub control: Option<router::Control>,
     pub control_received_at: Option<Instant>,
-    pub imu: Option<pubsub::Imu>,
+    pub imu: Option<router::Imu>,
     pub imu_received_at: Option<Instant>,
-    pub lidar_scan: Option<pubsub::Scan>,
+    pub lidar_scan: Option<router::Scan>,
     pub lidar_scan_received_at: Option<Instant>,
 }
 
 impl LatestTelemetry {
-    pub(crate) fn update_pubsub(&mut self, message: pubsub::Message) -> bool {
+    pub(crate) fn update_router(&mut self, message: router::Message) -> bool {
         match message {
-            pubsub::Message::Guidance(value) => {
+            router::Message::Guidance(value) => {
                 self.guidance = Some(value);
                 self.guidance_received_at = Some(Instant::now());
             }
-            pubsub::Message::Position(value) => {
+            router::Message::Position(value) => {
                 self.position = Some(value);
                 self.position_received_at = Some(Instant::now());
             }
-            pubsub::Message::Control(value) => {
+            router::Message::Control(value) => {
                 self.control = Some(value);
                 self.control_received_at = Some(Instant::now());
             }
-            pubsub::Message::Imu(value) => {
+            router::Message::Imu(value) => {
                 self.imu = Some(value);
                 self.imu_received_at = Some(Instant::now());
             }
-            pubsub::Message::LidarScan(value) => {
+            router::Message::LidarScan(value) => {
                 self.lidar_scan = Some(value);
                 self.lidar_scan_received_at = Some(Instant::now());
             }
@@ -164,7 +164,7 @@ impl Drop for TransportWorker {
 
 pub(crate) enum WorkerCommand {
     HostToMote(host_to_mote::Message),
-    PubSub(pubsub::Message),
+    PubSub(router::Message),
 }
 
 enum WorkerRequest {
@@ -639,10 +639,10 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
                                     let scan = pubsub_lidar_scan(&scan);
                                     state_changed |= state
                                         .latest_telemetry
-                                        .update_pubsub(pubsub::Message::LidarScan(scan));
+                                        .update_router(router::Message::LidarScan(scan));
                                 }
                                 mote_to_host::Message::PubSub(message) => {
-                                    state_changed |= state.latest_telemetry.update_pubsub(message);
+                                    state_changed |= state.latest_telemetry.update_router(message);
                                 }
                                 mote_to_host::Message::Ping => {
                                     send_message(
@@ -674,10 +674,10 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
     Ok(state_changed)
 }
 
-fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> pubsub::Scan {
-    let mut converted = pubsub::Scan::new();
+fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> router::Scan {
+    let mut converted = router::Scan::new();
     for reading in scan {
-        let point = pubsub::ScanPoint {
+        let point = router::ScanPoint {
             timestamp: units::Time::new(0.0),
             quality: reading.quality,
             angle: units::PlaneAngle::new(reading.angle_rad),

@@ -12,7 +12,7 @@ use bee_ui::{
         TimeSeriesDataset, TimeSeriesPlotProps, ViewportState,
     },
 };
-use mote_api::messages::pubsub;
+use mote_api::messages::router;
 mod imu;
 mod lidar;
 
@@ -56,13 +56,13 @@ impl TelemetryPlot {
         }
     }
 
-    const fn telemetry_selection(self) -> pubsub::TelemetrySelection {
+    const fn telemetry_selection(self) -> router::TelemetrySelection {
         match self {
-            Self::Guidance => pubsub::TelemetrySelection::Guidance,
-            Self::Position => pubsub::TelemetrySelection::Navigation,
-            Self::Control => pubsub::TelemetrySelection::Control,
-            Self::Imu => pubsub::TelemetrySelection::Imu,
-            Self::Lidar => pubsub::TelemetrySelection::Lidar,
+            Self::Guidance => router::TelemetrySelection::Guidance,
+            Self::Position => router::TelemetrySelection::Navigation,
+            Self::Control => router::TelemetrySelection::Control,
+            Self::Imu => router::TelemetrySelection::Imu,
+            Self::Lidar => router::TelemetrySelection::Lidar,
         }
     }
 
@@ -102,7 +102,7 @@ impl TelemetryRecorder {
         })
     }
 
-    fn write_sample(&mut self, received_at: Instant, message: &pubsub::Message) -> io::Result<()> {
+    fn write_sample(&mut self, received_at: Instant, message: &router::Message) -> io::Result<()> {
         if self
             .last_sample_time
             .is_some_and(|last_sample_time| received_at <= last_sample_time)
@@ -129,27 +129,27 @@ impl TelemetryRecorder {
 fn selected_sample(
     plot: TelemetryPlot,
     telemetry: &crate::transport::LatestTelemetry,
-) -> Option<(Instant, pubsub::Message)> {
+) -> Option<(Instant, router::Message)> {
     match plot {
         TelemetryPlot::Guidance => Some((
             telemetry.guidance_received_at?,
-            pubsub::Message::Guidance(telemetry.guidance.as_ref()?.clone()),
+            router::Message::Guidance(telemetry.guidance.as_ref()?.clone()),
         )),
         TelemetryPlot::Position => Some((
             telemetry.position_received_at?,
-            pubsub::Message::Position(telemetry.position.as_ref()?.clone()),
+            router::Message::Position(telemetry.position.as_ref()?.clone()),
         )),
         TelemetryPlot::Control => Some((
             telemetry.control_received_at?,
-            pubsub::Message::Control(telemetry.control.as_ref()?.clone()),
+            router::Message::Control(telemetry.control.as_ref()?.clone()),
         )),
         TelemetryPlot::Imu => Some((
             telemetry.imu_received_at?,
-            pubsub::Message::Imu(telemetry.imu.as_ref()?.clone()),
+            router::Message::Imu(telemetry.imu.as_ref()?.clone()),
         )),
         TelemetryPlot::Lidar => Some((
             telemetry.lidar_scan_received_at?,
-            pubsub::Message::LidarScan(telemetry.lidar_scan.as_ref()?.clone()),
+            router::Message::LidarScan(telemetry.lidar_scan.as_ref()?.clone()),
         )),
     }
 }
@@ -247,7 +247,7 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
             ConnectionStatus::Connected { .. }
         ) {
             match ui_state.worker.command(WorkerCommand::PubSub(
-                pubsub::Message::TelemetrySelection(selection),
+                router::Message::TelemetrySelection(selection),
             )) {
                 Ok(()) => {
                     ui_state.telemetry_panel_setup_sent = true;
@@ -290,8 +290,8 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
             &[("north", "North"), ("east", "East"), ("heading", "Heading")],
             telemetry.position.as_ref().map(|value| {
                 [
-                    quantity_value(value.north),
-                    quantity_value(value.east),
+                    quantity_value(value.coordinate.latitude),
+                    quantity_value(value.coordinate.longitude),
                     quantity_value(value.heading),
                 ]
             }),
@@ -305,10 +305,12 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
             &mut context.control,
             CONTROL_PLOT_ID,
             &[("left", "Left"), ("right", "Right")],
-            telemetry
-                .control
-                .as_ref()
-                .map(|value| [quantity_value(value.left), quantity_value(value.right)]),
+            telemetry.control.as_ref().map(|value| {
+                [
+                    quantity_value(value.motor_drive.left),
+                    quantity_value(value.motor_drive.right),
+                ]
+            }),
             telemetry.control_received_at,
             "Control",
             "Angular velocity",
@@ -505,23 +507,23 @@ mod tests {
     fn plots_request_the_matching_pubsub_telemetry() {
         assert!(matches!(
             TelemetryPlot::Control.telemetry_selection(),
-            pubsub::TelemetrySelection::Control
+            router::TelemetrySelection::Control
         ));
         assert!(matches!(
             TelemetryPlot::Guidance.telemetry_selection(),
-            pubsub::TelemetrySelection::Guidance
+            router::TelemetrySelection::Guidance
         ));
         assert!(matches!(
             TelemetryPlot::Position.telemetry_selection(),
-            pubsub::TelemetrySelection::Navigation
+            router::TelemetrySelection::Navigation
         ));
         assert!(matches!(
             TelemetryPlot::Imu.telemetry_selection(),
-            pubsub::TelemetrySelection::Imu
+            router::TelemetrySelection::Imu
         ));
         assert!(matches!(
             TelemetryPlot::Lidar.telemetry_selection(),
-            pubsub::TelemetrySelection::Lidar
+            router::TelemetrySelection::Lidar
         ));
     }
 }

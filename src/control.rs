@@ -3,7 +3,7 @@ use bee_ui::{
     prelude::{Badge, Card, Col, FormSelect, FormSelectOption, Row, SpanIcon, SvgIcon, Text},
 };
 use eframe::egui;
-use mote_api::messages::pubsub;
+use mote_api::messages::router;
 
 use crate::{
     state,
@@ -107,8 +107,7 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         send_message(
             context,
             ui_state,
-            pubsub::Message::Control(pubsub::Control {
-                timestamp: units::Time::new(0.0),
+            router::Message::MotorDrive(router::MotorDrive {
                 left: units::AngularVelocity::new(target_velocity.0),
                 right: units::AngularVelocity::new(target_velocity.1),
             }),
@@ -119,9 +118,9 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
             context,
             ui_state,
             if new_mode_enabled {
-                pubsub::Message::EnableControlMode
+                router::Message::EnableControlMode
             } else {
-                pubsub::Message::DisableControlMode
+                router::Message::DisableControlMode
             },
         );
     }
@@ -129,8 +128,7 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         send_message(
             context,
             ui_state,
-            pubsub::Message::Control(pubsub::Control {
-                timestamp: units::Time::new(0.0),
+            router::Message::MotorDrive(router::MotorDrive {
                 left: units::AngularVelocity::new(target_velocity.0),
                 right: units::AngularVelocity::new(target_velocity.1),
             }),
@@ -138,7 +136,7 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
     }
 }
 
-fn send_message(context: &mut Context, ui_state: &mut state::Context, message: pubsub::Message) {
+fn send_message(context: &mut Context, ui_state: &mut state::Context, message: router::Message) {
     match ui_state
         .worker
         .command(WorkerCommand::PubSub(message.clone()))
@@ -151,10 +149,10 @@ fn send_message(context: &mut Context, ui_state: &mut state::Context, message: p
     }
 
     match message {
-        pubsub::Message::EnableControlMode => context.mode_enabled = true,
-        pubsub::Message::DisableControlMode => context.mode_enabled = false,
-        pubsub::Message::Control(control) => {
-            context.drive_velocity = (control.left.into(), control.right.into());
+        router::Message::EnableControlMode => context.mode_enabled = true,
+        router::Message::DisableControlMode => context.mode_enabled = false,
+        router::Message::MotorDrive(motor_drive) => {
+            context.drive_velocity = (motor_drive.left.into(), motor_drive.right.into());
         }
         _ => {}
     }
@@ -208,12 +206,12 @@ fn render_latest_telemetry(ui: &mut UiRoot<'_>, telemetry: &LatestTelemetry) {
                     &[
                         (
                             "north",
-                            position.map(|value| format_quantity(value.north)),
+                            position.map(|value| format_quantity(value.coordinate.latitude)),
                             "m",
                         ),
                         (
                             "east",
-                            position.map(|value| format_quantity(value.east)),
+                            position.map(|value| format_quantity(value.coordinate.longitude)),
                             "m",
                         ),
                         (
@@ -232,12 +230,12 @@ fn render_latest_telemetry(ui: &mut UiRoot<'_>, telemetry: &LatestTelemetry) {
                     &[
                         (
                             "left",
-                            control.map(|value| format_quantity(value.left)),
+                            control.map(|value| format_quantity(value.motor_drive.left)),
                             "rad/s",
                         ),
                         (
                             "right",
-                            control.map(|value| format_quantity(value.right)),
+                            control.map(|value| format_quantity(value.motor_drive.right)),
                             "rad/s",
                         ),
                     ],
