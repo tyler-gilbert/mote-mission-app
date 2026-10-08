@@ -6,22 +6,20 @@ use crate::{
 };
 use bee_ui::{
     UiRoot,
-    prelude::{Badge, Button, Container, HStack, SvgIcon},
+    prelude::{Button, Container, HStack, SvgIcon},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ControlPanel {
     Connection,
-    Control,
     Mission,
     Telemetry,
     Settings,
 }
 
 impl ControlPanel {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::Connection,
-        Self::Control,
         Self::Mission,
         Self::Telemetry,
         Self::Settings,
@@ -30,7 +28,6 @@ impl ControlPanel {
     const fn title(self) -> &'static str {
         match self {
             Self::Connection => "Connection",
-            Self::Control => "Control",
             Self::Mission => "Mission",
             Self::Telemetry => "Telemetry",
             Self::Settings => "Settings",
@@ -40,7 +37,6 @@ impl ControlPanel {
     const fn icon(self) -> SvgIcon {
         match self {
             Self::Connection => SvgIcon::HddNetwork,
-            Self::Control => SvgIcon::Joystick,
             Self::Mission => SvgIcon::AirplaneFill,
             Self::Telemetry => SvgIcon::Activity,
             Self::Settings => SvgIcon::Gear,
@@ -54,6 +50,38 @@ pub(crate) struct Context {
     pub(crate) mission: mission::Context,
     pub(crate) telemetry: telemetry::Context,
     pub(crate) settings: settings::Context,
+}
+
+pub(crate) fn render_connection_status(ui: &mut UiRoot<'_>, connection: &ConnectionStatus) {
+    let (icon, tooltip, variant) = match connection {
+        ConnectionStatus::Disconnected => (
+            SvgIcon::WifiOff,
+            "Disconnected from a Mote".to_owned(),
+            bee_ui::prelude::Variant::Secondary,
+        ),
+        ConnectionStatus::Connecting { uid, .. } => (
+            SvgIcon::Wifi,
+            format!("Connecting to {uid}"),
+            bee_ui::prelude::Variant::Warning,
+        ),
+        ConnectionStatus::Connected { uid, .. } => (
+            SvgIcon::Wifi,
+            format!("Connected to {uid}"),
+            bee_ui::prelude::Variant::Success,
+        ),
+        ConnectionStatus::Error(error) => (
+            SvgIcon::WifiOff,
+            format!("Connection error: {error}"),
+            bee_ui::prelude::Variant::Danger,
+        ),
+    };
+    ui.button(
+        Button::new("")
+            .variant(variant)
+            .icon(icon)
+            .disabled()
+            .hover_text(tooltip),
+    );
 }
 
 pub(crate) fn render(
@@ -76,36 +104,25 @@ pub(crate) fn render(
         ui.hstack(HStack::new().wrap(true), |ui| {
             for panel in ControlPanel::ALL {
                 let button = if panel == active_panel {
-                    Button::primary(panel.title()).icon(panel.icon())
+                    Button::primary("")
+                        .icon(panel.icon())
+                        .hover_text(panel.title())
                 } else {
-                    Button::secondary(panel.title()).icon(panel.icon())
+                    Button::secondary("")
+                        .icon(panel.icon())
+                        .hover_text(panel.title())
                 };
                 if ui.button(button).clicked() {
                     actions.push(UiAction::SelectPanel(panel));
                 }
             }
-            match &connection {
-                ConnectionStatus::Disconnected => {
-                    ui.badge(Badge::secondary("Disconnected").as_pill());
-                }
-                ConnectionStatus::Connecting { uid, .. } => {
-                    ui.badge(Badge::warning(format!("Connecting to {uid}")).as_pill());
-                }
-                ConnectionStatus::Connected { uid, .. } => {
-                    ui.badge(Badge::success(format!("Connected to {uid}")).as_pill());
-                }
-                ConnectionStatus::Error(_) => {
-                    ui.badge(Badge::danger("Connection error").as_pill());
-                }
-            }
+            control::render(ui, &mut context.control, ui_state);
+            render_connection_status(ui, &connection);
         });
 
         match active_panel {
             ControlPanel::Connection => {
                 actions.extend(connection::render(ui, &mut context.connection, ui_state));
-            }
-            ControlPanel::Control => {
-                control::render(ui, &mut context.control, ui_state);
             }
             ControlPanel::Mission => mission::render(ui, &mut context.mission),
             ControlPanel::Telemetry => {

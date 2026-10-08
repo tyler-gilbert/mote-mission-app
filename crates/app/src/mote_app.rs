@@ -4,7 +4,7 @@ use std::{
 };
 
 use eframe::egui;
-use mote_api::messages::{host_to_mote, router};
+use mote_api::messages::host_to_mote;
 
 use crate::{
     connection,
@@ -32,10 +32,6 @@ impl MoteApp {
             },
             ui_state: state::Context {
                 worker: TransportWorker::start(),
-                control_panel_setup_sent: false,
-                telemetry_panel_setup_sent: false,
-                telemetry_selection: router::TelemetrySelection::Guidance,
-                is_record_telemetry: false,
                 device_refresh_until: None,
                 snapshot: WorkerSnapshot {
                     devices: Vec::new(),
@@ -75,8 +71,7 @@ impl MoteApp {
             &self.ui_state.snapshot.connection,
             ConnectionStatus::Connected { .. }
         ) {
-            self.ui_state.control_panel_setup_sent = false;
-            self.ui_state.telemetry_panel_setup_sent = false;
+            self.ui_context.control.telemetry_selection_sent = false;
             self.ui_context.control.mode_enabled = false;
             self.ui_context.control.drive_velocity = (0.0, 0.0);
         }
@@ -100,28 +95,6 @@ impl MoteApp {
         }
     }
 
-    fn send_router_message(&mut self, message: router::Message) -> bool {
-        let (mode_enabled, drive_velocity) = match &message {
-            router::Message::EnableControlMode => (Some(true), None),
-            router::Message::DisableControlMode => (Some(false), None),
-            router::Message::MotorDrive(motor_drive) => (
-                None,
-                Some((motor_drive.left.into(), motor_drive.right.into())),
-            ),
-            _ => (None, None),
-        };
-        let sent = self.send_command(WorkerCommand::PubSub(message));
-        if sent {
-            if let Some(enabled) = mode_enabled {
-                self.ui_context.control.mode_enabled = enabled;
-            }
-            if let Some(velocity) = drive_velocity {
-                self.ui_context.control.drive_velocity = velocity;
-            }
-        }
-        sent
-    }
-
     fn stop_drive(&mut self) {
         if self.ui_context.control.drive_velocity != (0.0, 0.0)
             && self.send_command(WorkerCommand::HostToMote(
@@ -138,12 +111,6 @@ impl MoteApp {
     fn apply_ui_action(&mut self, action: UiAction) {
         match action {
             UiAction::SelectPanel(panel) => {
-                if panel != ControlPanel::Control {
-                    self.ui_state.control_panel_setup_sent = false;
-                }
-                if panel != ControlPanel::Telemetry {
-                    self.ui_state.telemetry_panel_setup_sent = false;
-                }
                 self.ui_state.active_panel = panel;
             }
             UiAction::Refresh => {
@@ -184,33 +151,7 @@ impl eframe::App for MoteApp {
         for action in actions {
             self.apply_ui_action(action);
         }
-        if self.ui_state.active_panel == ControlPanel::Control
-            && !self.ui_state.control_panel_setup_sent
-            && matches!(
-                &self.ui_state.snapshot.connection,
-                ConnectionStatus::Connected { .. }
-            )
-        {
-            let enable_sent = self.send_router_message(router::Message::EnableControlMode);
-            let telemetry_sent = self.send_router_message(router::Message::TelemetrySelection(
-                router::TelemetrySelection::RemoteControl,
-            ));
-            self.ui_state.control_panel_setup_sent = enable_sent && telemetry_sent;
-        }
-        if self.ui_state.active_panel == ControlPanel::Telemetry
-            && !self.ui_state.telemetry_panel_setup_sent
-            && matches!(
-                &self.ui_state.snapshot.connection,
-                ConnectionStatus::Connected { .. }
-            )
-        {
-            self.ui_state.telemetry_panel_setup_sent = self.send_router_message(
-                router::Message::TelemetrySelection(self.ui_state.telemetry_selection.clone()),
-            );
-        }
-        if self.ui_state.active_panel != ControlPanel::Control
-            || !self.ui_context.control.mode_enabled
-        {
+        if !self.ui_context.control.mode_enabled {
             self.stop_drive();
         }
 

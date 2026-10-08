@@ -341,7 +341,7 @@ fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapsh
                 }
                 Ok(WorkerRequest::Command(WorkerCommand::PubSub(message))) => {
                     if let Some(error) =
-                        send_active_message(&mut session, host_to_mote::Message::PubSub(message))
+                        send_active_message(&mut session, host_to_mote::Message::Router(message))
                     {
                         state.connection = ConnectionStatus::Error(error);
                     }
@@ -675,19 +675,19 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
 }
 
 fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> router::Scan {
-    let mut converted = router::Scan::new();
-    for reading in scan {
-        let point = router::ScanPoint {
-            timestamp: units::Time::new(0.0),
+    let point_cloud = scan
+        .iter()
+        .map(|reading| router::ScanPoint {
             quality: reading.quality,
             angle: units::PlaneAngle::new(reading.angle_rad),
             distance: units::Length::new(reading.distance_mm / 1_000.0),
-        };
-        if converted.push(point).is_err() {
-            break;
-        }
+        })
+        .collect();
+
+    router::Scan {
+        timestamp: units::Time::new(0.0),
+        point_cloud,
     }
-    converted
 }
 
 fn send_active_message(
