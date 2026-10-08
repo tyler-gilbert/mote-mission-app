@@ -20,19 +20,14 @@ const FORWARD_SPEED_RAD_PER_S: f32 = 1.5;
 const TURN_SPEED_RAD_PER_S: f32 = 1.0;
 const STOP: (f32, f32) = (0.0, 0.0);
 
-const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 9] = [
-    ("None", router::TelemetrySelection::None),
-    ("Control", router::TelemetrySelection::Control),
-    ("Guidance", router::TelemetrySelection::Guidance),
+const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 7] = [
+    ("None      ", router::TelemetrySelection::None),
+    ("Control   ", router::TelemetrySelection::Control),
+    ("Guidance  ", router::TelemetrySelection::Guidance),
     ("Navigation", router::TelemetrySelection::Navigation),
-    ("IMU", router::TelemetrySelection::Imu),
-    ("Remote control", router::TelemetrySelection::RemoteControl),
-    ("LiDAR", router::TelemetrySelection::Lidar),
-    (
-        "Position inputs",
-        router::TelemetrySelection::PositionInputs,
-    ),
-    ("All", router::TelemetrySelection::All),
+    ("IMU       ", router::TelemetrySelection::Imu),
+    ("LiDAR     ", router::TelemetrySelection::Lidar),
+    ("All       ", router::TelemetrySelection::All),
 ];
 
 pub(crate) struct Context {
@@ -117,6 +112,12 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
 
     let (remote_control_clicked, pressed, mode_changed, record_clicked) =
         ui.hstack(HStack::new().gap(4.0), |ui| {
+            let _ = ui.raw(|raw_ui| {
+                raw_ui
+                    .add(SpanIcon::new(SvgIcon::Joystick).size(16.0).egui_image(None))
+                    .on_hover_text("Select the telemetry stream requested from the Mote")
+            });
+
             let remote_control_button = if context.mode_enabled {
                 Button::success("")
                     .icon(SvgIcon::ToggleOn)
@@ -154,6 +155,12 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
                     .inner
             });
 
+            let _ = ui.raw(|raw_ui| {
+                raw_ui
+                    .add(SpanIcon::new(SvgIcon::Activity).size(16.0).egui_image(None))
+                    .on_hover_text("Select the telemetry stream requested from the Mote")
+            });
+
             let mut selected_mode = selected_mode;
             let mode_changed = ui.raw(|raw_ui| {
                 let changed = raw_ui
@@ -170,11 +177,6 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
                     })
                     .inner;
                 changed
-            });
-            let _ = ui.raw(|raw_ui| {
-                raw_ui
-                    .add(SpanIcon::new(SvgIcon::Activity).size(16.0).egui_image(None))
-                    .on_hover_text("Select the telemetry stream requested from the Mote")
             });
 
             let record_button = if recording {
