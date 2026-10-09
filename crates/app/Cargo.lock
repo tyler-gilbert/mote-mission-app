@@ -2483,6 +2483,7 @@ dependencies = [
  "corncobs",
  "defmt 1.1.1",
  "heapless",
+ "libm",
  "postcard",
  "sci-units",
  "serde",

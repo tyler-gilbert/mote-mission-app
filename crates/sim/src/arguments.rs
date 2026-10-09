@@ -14,18 +14,18 @@ struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Harness {
-    /// Replay Postcard IMU and LiDAR inputs through navigation.
+    /// Replay one or more canonical LiDAR recordings through navigation.
     Navigation {
-        /// Postcard IMU input file.
+        /// A canonical .data recording or its .json representation.
+        #[arg(required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
+        /// Optional JSON-lines output for per-revolution observations and poses.
         #[arg(long)]
-        imu: PathBuf,
-        /// Postcard LiDAR scan input file.
-        #[arg(long)]
-        lidar: PathBuf,
+        dump: Option<PathBuf>,
     },
-    /// Convert a recorded LiDAR telemetry file to JSON.
-    ConvertLidar {
-        /// Input .data file (for example, lidar_1791341524014.data).
+    /// Convert a recorded telemetry file to JSON.
+    ConvertTelemetry {
+        /// Input .data file (for example, telemetry_1791430559418.data).
         input: PathBuf,
         /// Output JSON path (defaults to the input path with a .json extension).
         #[arg(short, long)]
@@ -39,9 +39,12 @@ enum Harness {
 
 pub fn execute() -> anyhow::Result<()> {
     match Arguments::parse().harness {
-        Harness::Navigation { imu, lidar } => runner::navigation(&lidar),
-        Harness::ConvertLidar { input, output } => {
-            runner::convert_lidar_to_json(&input, output.as_deref())
+        Harness::Navigation { inputs, dump } if inputs.len() == 1 && dump.is_none() => {
+            runner::navigation(&inputs[0])
+        }
+        Harness::Navigation { inputs, dump } => runner::navigation_paths(&inputs, dump.as_deref()),
+        Harness::ConvertTelemetry { input, output } => {
+            runner::convert_telemetry_to_json(&input, output.as_deref())
         }
         Harness::Guidance => {
             let position = router::Position::default();
