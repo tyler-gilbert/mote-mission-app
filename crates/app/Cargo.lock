@@ -2501,6 +2501,7 @@ dependencies = [
  "mote-api",
  "postcard",
  "sci-units",
+ "serde_json",
 ]
 
 [[package]]

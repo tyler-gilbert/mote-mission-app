@@ -124,11 +124,11 @@ pub(crate) fn render(
             ControlPanel::Connection => {
                 actions.extend(connection::render(ui, &mut context.connection, ui_state));
             }
-            ControlPanel::Mission => mission::render(ui, &mut context.mission),
+            ControlPanel::Mission => mission::render(ui, &mut context.mission, &context.settings),
             ControlPanel::Telemetry => {
                 telemetry::render(ui, &mut context.telemetry, ui_state);
             }
-            ControlPanel::Settings => settings::render(ui, &mut context.settings),
+            ControlPanel::Settings => settings::render(ui, &mut context.settings, ui_state),
         }
     });
 

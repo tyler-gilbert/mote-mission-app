@@ -28,7 +28,7 @@ impl MoteApp {
                 control: crate::control::Context::default(),
                 mission: crate::mission::Context,
                 telemetry: crate::telemetry::Context::default(),
-                settings: crate::settings::Context,
+                settings: crate::settings::Context::default(),
             },
             ui_state: state::Context {
                 worker: TransportWorker::start(),

@@ -22,6 +22,7 @@ Commander:
 
 Ops Officer. 
 - Ensure Tail number is clearly visible.
+- Use USB Serial configuration to assign tail number to reliable mote.
 - Ensure firmware can be flashed on the reliable mote.
 - Understand how to operate the mission software.
 - Ensure test arena is operating correctly.

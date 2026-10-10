@@ -127,9 +127,9 @@ mod tests {
                 z: units::Acceleration::new(values[2]),
             },
             gyro: router::Gyro {
-                x: units::AngularAcceleration::new(values[3]),
-                y: units::AngularAcceleration::new(values[4]),
-                z: units::AngularAcceleration::new(values[5]),
+                x: units::AngularVelocity::new(values[3]),
+                y: units::AngularVelocity::new(values[4]),
+                z: units::AngularVelocity::new(values[5]),
             },
         }
     }

@@ -12,5 +12,6 @@ eframe = "0.33"
 egui_extras = { version = "0.33", features = ["svg"] }
 mdns-sd = "0.13.11"
 mote-api = { path = "../../../mote/mote-api" }
+serde_json = "1"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 units = { package = "sci-units", version = "0.6", features = ["use_defmt", "f32"] }

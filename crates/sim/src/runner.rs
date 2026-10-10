@@ -255,9 +255,9 @@ fn replay_navigation(input_path: &Path) -> Result<(NavigationInput, HarnessConte
 fn print_navigation_summary(input_path: &Path, input: &NavigationInput, context: &HarnessContext) {
     let input_name = input_path.to_string_lossy();
     let frame = canonical_reference_frame();
-    let midpoint = navigation::northeast_local(&frame);
-    let midpoint_east: f32 = (midpoint.east / units::Scalar::new(2.0)).into();
-    let midpoint_north: f32 = (midpoint.north / units::Scalar::new(2.0)).into();
+    let midpoint = navigation::to_local(&frame, &frame.global_center);
+    let midpoint_east: f32 = midpoint.east.into();
+    let midpoint_north: f32 = midpoint.north.into();
     let (position_error, heading_error) = context
         .positions
         .last()
@@ -357,15 +357,12 @@ fn dump_lines_for(
 
 fn canonical_reference_frame() -> router::ReferenceFrame {
     router::ReferenceFrame {
-        southwest: router::Coordinate {
-            latitude: units::imperial::Degrees::new(0.0),
-            longitude: units::imperial::Degrees::new(0.0),
+        global_center: router::Coordinate {
+            latitude: units::imperial::Degrees::new(39.0),
+            longitude: units::imperial::Degrees::new(39.0),
         },
-        northeast: router::Coordinate {
-            latitude: units::imperial::Degrees::new(78.0),
-            longitude: units::imperial::Degrees::new(78.0),
-        },
-        scale: 1.0e7,
+        global_diagonal: units::Length::new(78.0 * 111_319.5 * core::f32::consts::SQRT_2),
+        local_diagonal: units::Length::new(78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2),
     }
 }
 
@@ -633,15 +630,12 @@ mod tests {
     #[test]
     fn phase_one_frame_helpers_preserve_the_flat_scaled_geometry() {
         let frame = router::ReferenceFrame {
-            southwest: router::Coordinate {
-                latitude: units::imperial::Degrees::new(0.0),
-                longitude: units::imperial::Degrees::new(0.0),
+            global_center: router::Coordinate {
+                latitude: units::imperial::Degrees::new(4.5),
+                longitude: units::imperial::Degrees::new(4.5),
             },
-            northeast: router::Coordinate {
-                latitude: units::imperial::Degrees::new(9.0),
-                longitude: units::imperial::Degrees::new(9.0),
-            },
-            scale: 1.0e7,
+            global_diagonal: units::Length::new(9.0 * 111_319.5 * core::f32::consts::SQRT_2),
+            local_diagonal: units::Length::new(9.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2),
         };
         let coordinate = router::Coordinate {
             latitude: units::imperial::Degrees::new(1.25),
@@ -654,7 +648,7 @@ mod tests {
         assert!((latitude - 1.25).abs() < 0.0001);
         assert!((longitude - 2.5).abs() < 0.0001);
 
-        let origin = navigation::to_local(&frame, &frame.southwest);
+        let origin = navigation::to_local(&frame, &frame.global_center);
         let origin_east: f32 = origin.east.into();
         let origin_north: f32 = origin.north.into();
         assert!(origin_east.abs() < f32::EPSILON);
@@ -663,18 +657,21 @@ mod tests {
         let northeast = navigation::northeast_local(&frame);
         let east: f32 = northeast.east.into();
         let north: f32 = northeast.north.into();
-        assert!((east - 0.1).abs() < 0.001);
-        assert!((north - 0.1).abs() < 0.001);
+        let expected_diagonal: f32 = frame.local_diagonal.into();
+        assert!((east.hypot(north) - expected_diagonal / 2.0).abs() < 0.001);
+        let expected_component = expected_diagonal * 0.5 * core::f32::consts::FRAC_1_SQRT_2;
+        assert!((east - expected_component).abs() < 0.001);
+        assert!((north - expected_component).abs() < 0.001);
 
-        let small_scale_frame = router::ReferenceFrame {
-            scale: 1.0e5,
+        let larger_diagonal_frame = router::ReferenceFrame {
+            local_diagonal: frame.local_diagonal * units::Scalar::new(100.0),
             ..frame.clone()
         };
-        let small_scale_northeast = navigation::northeast_local(&small_scale_frame);
-        let small_scale_east: f32 = small_scale_northeast.east.into();
-        let small_scale_north: f32 = small_scale_northeast.north.into();
-        assert!((small_scale_east - 10.0).abs() < 0.02);
-        assert!((small_scale_north - 10.0).abs() < 0.02);
+        let larger_diagonal_northeast = navigation::northeast_local(&larger_diagonal_frame);
+        let larger_diagonal_east: f32 = larger_diagonal_northeast.east.into();
+        let larger_diagonal_north: f32 = larger_diagonal_northeast.north.into();
+        assert!((larger_diagonal_east - expected_component * 100.0).abs() < 0.02);
+        assert!((larger_diagonal_north - expected_component * 100.0).abs() < 0.02);
 
         let axis_cases = [
             (0.0, 1.0, 0.0),
@@ -849,6 +846,7 @@ mod tests {
             units::Length::new(vertex.0.hypot(vertex.1)),
         ));
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
+
         let corners = navigation::detect_corners(&revolution);
         let observation = corners
             .iter()
@@ -857,9 +855,48 @@ mod tests {
         let detected_x: f32 = observation.vertex.0.into();
         let detected_y: f32 = observation.vertex.1.into();
         let interior: f32 = observation.interior_angle_rad.into();
-        assert!((detected_x - vertex.0).abs() < 0.02);
+        assert!(
+            (detected_x - vertex.0).abs() < 0.02,
+            "detected=({}, {}) expected=({}, {})",
+            detected_x,
+            detected_y,
+            vertex.0,
+            vertex.1
+        );
         assert!((detected_y - vertex.1).abs() < 0.02);
         assert!((interior.to_degrees() - 120.0).abs() < 3.0);
+    }
+
+    #[test]
+    fn phase_three_detects_a_corner_straddling_the_zero_degree_bin() {
+        let vertex = (1.5_f32, 0.0_f32);
+        let bisector = 0.0_f32;
+        let mut points = Vec::new();
+        for side in [-1.0_f32, 1.0_f32] {
+            for step in 0..32 {
+                let distance = 0.04 + step as f32 * 0.01;
+                let wall_angle = bisector + side * core::f32::consts::FRAC_PI_3;
+                let x = vertex.0 + distance * wall_angle.cos();
+                let y = vertex.1 + distance * wall_angle.sin();
+                let raw_angle = (-y.atan2(x)).rem_euclid(2.0 * core::f32::consts::PI);
+                points.push((
+                    units::PlaneAngle::new(raw_angle),
+                    units::Length::new(x.hypot(y)),
+                ));
+            }
+        }
+        points.push((units::PlaneAngle::new(0.0), units::Length::new(vertex.0)));
+        let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
+
+        let corners = navigation::detect_corners(&revolution);
+        let observation = corners
+            .iter()
+            .find(|corner| corner.kind == navigation::CornerKind::Southwest)
+            .expect("a convex corner on the 0-degree seam should be detected");
+        let detected_x: f32 = observation.vertex.0.into();
+        let detected_y: f32 = observation.vertex.1.into();
+        assert!((detected_x - vertex.0).abs() < 0.02, "x={detected_x}");
+        assert!((detected_y - vertex.1).abs() < 0.02, "y={detected_y}");
     }
 
     #[test]
@@ -870,7 +907,7 @@ mod tests {
         for side in [-1.0_f32, 1.0_f32] {
             for step in 0..32 {
                 let distance = 0.04 + step as f32 * 0.01;
-                let wall_angle = bisector + side * core::f32::consts::PI / 6.0;
+                let wall_angle = bisector + side * core::f32::consts::FRAC_PI_3;
                 let x = vertex.0 + distance * wall_angle.cos();
                 let y = vertex.1 + distance * wall_angle.sin();
                 points.push((
@@ -880,7 +917,9 @@ mod tests {
             }
         }
         points.push((
-            units::PlaneAngle::new((-bisector).rem_euclid(2.0 * core::f32::consts::PI)),
+            units::PlaneAngle::new(
+                (-vertex.1.atan2(vertex.0)).rem_euclid(2.0 * core::f32::consts::PI),
+            ),
             units::Length::new(vertex.0.hypot(vertex.1)),
         ));
 
@@ -890,8 +929,12 @@ mod tests {
             .iter()
             .find(|corner| corner.kind == navigation::CornerKind::Northeast)
             .expect("synthetic concave corner should be detected");
+        let detected_x: f32 = observation.vertex.0.into();
+        let detected_y: f32 = observation.vertex.1.into();
         let interior: f32 = observation.interior_angle_rad.into();
-        assert!((interior.to_degrees() - 60.0).abs() < 6.0);
+        assert!((detected_x - vertex.0).abs() < 0.02, "x={detected_x}");
+        assert!((detected_y - vertex.1).abs() < 0.02, "y={detected_y}");
+        assert!((interior.to_degrees() - 120.0).abs() < 3.0);
     }
 
     #[test]
@@ -931,15 +974,12 @@ mod tests {
 
     fn phase_four_test_frame() -> router::ReferenceFrame {
         router::ReferenceFrame {
-            southwest: router::Coordinate {
-                latitude: units::imperial::Degrees::new(0.0),
-                longitude: units::imperial::Degrees::new(0.0),
+            global_center: router::Coordinate {
+                latitude: units::imperial::Degrees::new(0.5),
+                longitude: units::imperial::Degrees::new(0.5),
             },
-            northeast: router::Coordinate {
-                latitude: units::imperial::Degrees::new(1.0),
-                longitude: units::imperial::Degrees::new(1.0),
-            },
-            scale: 111_319.5,
+            global_diagonal: units::Length::new(111_319.5 * core::f32::consts::SQRT_2),
+            local_diagonal: units::Length::new(core::f32::consts::SQRT_2),
         }
     }
 
@@ -950,12 +990,13 @@ mod tests {
         heading: f32,
         score: f32,
     ) -> navigation::CornerObservation {
-        let corner = match kind {
-            navigation::CornerKind::Southwest => (0.0, 0.0),
-            navigation::CornerKind::Northeast => {
-                let northeast = navigation::northeast_local(frame);
-                (northeast.east.into(), northeast.north.into())
-            }
+        let northeast = navigation::northeast_local(frame);
+        let corner: (f32, f32) = match kind {
+            navigation::CornerKind::Southwest => (
+                (northeast.east * units::Scalar::new(-1.0)).into(),
+                (northeast.north * units::Scalar::new(-1.0)).into(),
+            ),
+            navigation::CornerKind::Northeast => (northeast.east.into(), northeast.north.into()),
         };
         let east = corner.0 - position.0;
         let north = corner.1 - position.1;
@@ -996,8 +1037,12 @@ mod tests {
                 expected_heading,
                 0.9,
             );
-            let pose = navigation::fix_from_corners(&frame, &[observation])
-                .expect("one-corner observation should produce a fix");
+            let pose = navigation::fix_from_corners(
+                &frame,
+                &[observation],
+                Some(units::PlaneAngle::new(expected_heading)),
+            )
+            .expect("one-corner observation with a prior heading should produce a fix");
             let east: f32 = pose.position.east.into();
             let north: f32 = pose.position.north.into();
             let heading: f32 = pose.heading.into();
@@ -1006,6 +1051,10 @@ mod tests {
             let heading_error: f32 =
                 navigation::wrap_pi(units::PlaneAngle::new(heading - expected_heading)).into();
             assert!(heading_error.abs() < 0.0001);
+            assert!(
+                navigation::fix_from_corners(&frame, &[observation], None).is_none(),
+                "one corner without a prior heading cannot fix heading"
+            );
         }
     }
 
@@ -1028,7 +1077,7 @@ mod tests {
             expected_heading,
             0.9,
         );
-        let pose = navigation::fix_from_corners(&frame, &[southwest, northeast])
+        let pose = navigation::fix_from_corners(&frame, &[southwest, northeast], None)
             .expect("consistent corner observations should produce a fix");
         let east: f32 = pose.position.east.into();
         let north: f32 = pose.position.north.into();
@@ -1042,25 +1091,24 @@ mod tests {
         let mut inconsistent = northeast;
         let range: f32 = inconsistent.range_m.into();
         inconsistent.range_m = units::Length::new(range + 0.2);
-        assert!(navigation::fix_from_corners(&frame, &[southwest, inconsistent]).is_none());
+        assert!(navigation::fix_from_corners(&frame, &[southwest, inconsistent], None).is_none());
     }
 
     #[test]
     fn phase_four_fixture_fixes_stay_near_the_arena_midpoint() {
         let frame = router::ReferenceFrame {
-            southwest: router::Coordinate {
-                latitude: units::imperial::Degrees::new(0.0),
-                longitude: units::imperial::Degrees::new(0.0),
+            global_center: router::Coordinate {
+                latitude: units::imperial::Degrees::new(39.0),
+                longitude: units::imperial::Degrees::new(39.0),
             },
-            northeast: router::Coordinate {
-                latitude: units::imperial::Degrees::new(78.0),
-                longitude: units::imperial::Degrees::new(78.0),
-            },
-            scale: 1.0e7,
+            global_diagonal: units::Length::new(78.0 * 111_319.5 * core::f32::consts::SQRT_2),
+            local_diagonal: units::Length::new(
+                78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2,
+            ),
         };
-        let midpoint = navigation::northeast_local(&frame);
-        let midpoint_east: f32 = (midpoint.east / units::Scalar::new(2.0)).into();
-        let midpoint_north: f32 = (midpoint.north / units::Scalar::new(2.0)).into();
+        let midpoint = navigation::to_local(&frame, &frame.global_center);
+        let midpoint_east: f32 = midpoint.east.into();
+        let midpoint_north: f32 = midpoint.north.into();
         let expected_heading = 225.0_f32;
         let mut heading_samples = Vec::new();
 
@@ -1072,7 +1120,7 @@ mod tests {
                 context.update(scan.timestamp, None, Some(scan), None, &frame);
                 while let Some(revolution) = context.take_completed_revolution() {
                     let corners = navigation::detect_corners(&revolution);
-                    if let Some(pose) = navigation::fix_from_corners(&frame, &corners) {
+                    if let Some(pose) = navigation::fix_from_corners(&frame, &corners, None) {
                         fixes.push(pose);
                     }
                 }
@@ -1120,15 +1168,14 @@ mod tests {
     #[test]
     fn phase_six_integrated_replay_matches_binary_and_json_fixtures() {
         let frame = router::ReferenceFrame {
-            southwest: router::Coordinate {
-                latitude: units::imperial::Degrees::new(0.0),
-                longitude: units::imperial::Degrees::new(0.0),
+            global_center: router::Coordinate {
+                latitude: units::imperial::Degrees::new(39.0),
+                longitude: units::imperial::Degrees::new(39.0),
             },
-            northeast: router::Coordinate {
-                latitude: units::imperial::Degrees::new(78.0),
-                longitude: units::imperial::Degrees::new(78.0),
-            },
-            scale: 1.0e7,
+            global_diagonal: units::Length::new(78.0 * 111_319.5 * core::f32::consts::SQRT_2),
+            local_diagonal: units::Length::new(
+                78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2,
+            ),
         };
         let mut final_headings = Vec::new();
         for (name, json, data) in [
@@ -1161,11 +1208,11 @@ mod tests {
                 .last()
                 .expect("fixture should have a final pose");
             let local = navigation::to_local(&frame, &final_position.coordinate);
-            let midpoint = navigation::northeast_local(&frame);
+            let midpoint = navigation::to_local(&frame, &frame.global_center);
             let east: f32 = local.east.into();
             let north: f32 = local.north.into();
-            let midpoint_east: f32 = (midpoint.east / units::Scalar::new(2.0)).into();
-            let midpoint_north: f32 = (midpoint.north / units::Scalar::new(2.0)).into();
+            let midpoint_east: f32 = midpoint.east.into();
+            let midpoint_north: f32 = midpoint.north.into();
             assert!((east - midpoint_east).hypot(north - midpoint_north) <= 0.05);
             let heading: f32 = final_position.heading.into();
             final_headings.push(heading);
@@ -1184,9 +1231,9 @@ mod tests {
                 z: units::Acceleration::new(accel.2),
             },
             gyro: router::Gyro {
-                x: units::AngularAcceleration::new(gyro.0),
-                y: units::AngularAcceleration::new(gyro.1),
-                z: units::AngularAcceleration::new(gyro.2),
+                x: units::AngularVelocity::new(gyro.0),
+                y: units::AngularVelocity::new(gyro.1),
+                z: units::AngularVelocity::new(gyro.2),
             },
         }
     }
@@ -1194,7 +1241,7 @@ mod tests {
     fn phase_five_seed_position(frame: &router::ReferenceFrame) -> router::Position {
         router::Position {
             timestamp: units::Time::new(0.0),
-            coordinate: frame.southwest.clone(),
+            coordinate: frame.global_center.clone(),
             heading: units::imperial::Degrees::new(0.0),
         }
     }
