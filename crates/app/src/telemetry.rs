@@ -3,7 +3,7 @@ use std::{collections::VecDeque, time::Instant};
 use bee_ui::{
     UiRoot,
     prelude::{
-        DisclosureState, Dropdown, DropdownItem, PlotPoint, TimeSeries, TimeSeriesDataset,
+        Card, DisclosureState, Dropdown, DropdownItem, PlotPoint, TimeSeries, TimeSeriesDataset,
         TimeSeriesPlotProps, ViewportState,
     },
 };
@@ -27,15 +27,17 @@ enum TelemetryPlot {
     Control,
     Imu,
     Lidar,
+    Status,
 }
 
 impl TelemetryPlot {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Guidance,
         Self::Position,
         Self::Control,
         Self::Imu,
         Self::Lidar,
+        Self::Status,
     ];
 
     const fn label(self) -> &'static str {
@@ -45,6 +47,7 @@ impl TelemetryPlot {
             Self::Control => "Control",
             Self::Imu => "IMU",
             Self::Lidar => "LiDAR",
+            Self::Status => "Status",
         }
     }
 }
@@ -148,9 +151,88 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         TelemetryPlot::Lidar => {
             lidar::render(ui, &mut context.lidar, ui_state, plot_height);
         }
+        TelemetryPlot::Status => render_debug_dashboard(ui, telemetry),
     }
 
     context.selected_plot = Some(selected_plot);
+}
+
+fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
+    ui.card(Card::with_title("Packet status"), |ui| {
+        ui.raw(|raw_ui| {
+            raw_ui.horizontal_wrapped(|raw_ui| {
+                raw_ui.vertical(|raw_ui| {
+                    raw_ui.label("Current sequence");
+                    raw_ui.heading(
+                        telemetry
+                            .debug
+                            .as_ref()
+                            .map_or_else(|| "—".to_owned(), |debug| debug.sequence.to_string()),
+                    );
+                });
+                raw_ui.add_space(24.0);
+                raw_ui.vertical(|raw_ui| {
+                    raw_ui.label("Packets lost");
+                    raw_ui.heading(telemetry.debug_packets_lost.to_string());
+                });
+                raw_ui.add_space(24.0);
+                raw_ui.vertical(|raw_ui| {
+                    raw_ui.label("Frame reference hash");
+                    raw_ui.heading(telemetry.debug.as_ref().map_or_else(
+                        || "—".to_owned(),
+                        |debug| format!("{:#010x}", debug.reference_frame_hash),
+                    ));
+                });
+                raw_ui.add_space(24.0);
+                raw_ui.vertical(|raw_ui| {
+                    raw_ui.label("Route hash");
+                    raw_ui.heading(telemetry.debug.as_ref().map_or_else(
+                        || "—".to_owned(),
+                        |debug| format!("{:#010x}", debug.route_hash),
+                    ));
+                });
+            });
+        });
+    });
+
+    ui.card(Card::with_title("Counters"), |ui| {
+        if let Some(debug) = telemetry.debug.as_ref() {
+            let counters = serde_json::to_value(&debug.counters).unwrap_or_default();
+            if let Some(counters) = counters.as_object() {
+                ui.raw(|raw_ui| {
+                    eframe::egui::Grid::new("mote.telemetry.debug.counters")
+                        .striped(true)
+                        .show(raw_ui, |raw_ui| {
+                            for (key, value) in counters {
+                                raw_ui.strong(key);
+                                raw_ui.label(value.to_string());
+                                raw_ui.end_row();
+                            }
+                        });
+                });
+            }
+        } else {
+            ui.text(bee_ui::prelude::Text::new("Waiting for debug counters…").subtle());
+        }
+    });
+
+    ui.card(Card::with_title("Log"), |ui| {
+        ui.raw(|raw_ui| {
+            eframe::egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(260.0)
+                .stick_to_bottom(true)
+                .show(raw_ui, |raw_ui| {
+                    if telemetry.debug_logs.is_empty() {
+                        raw_ui.label("Waiting for log messages…");
+                    } else {
+                        for line in &telemetry.debug_logs {
+                            raw_ui.label(line);
+                        }
+                    }
+                });
+        });
+    });
 }
 
 const PLOT_POINT_CAPACITY: usize = 10_000;

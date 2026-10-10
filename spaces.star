@@ -10,7 +10,11 @@ def add_cargo_project(name: str, deps = [], extra_rules = []):
     working_directory = "./crates/" + name
     rule_names = ["check", "build", "run", "test", "format", "format_check", "lint", "ci"] + extra_rules
     rules = rules_new(name, rule_names)
-    cargo_deps = deps_new(rules = deps, files = ["crates/{}/src/**".format(name)])
+    cargo_deps = deps_new(rules = deps, files = [
+        "crates/{}/src/**".format(name),
+        "**/Cargo.toml",
+        "//mote/mote-api/**",
+    ])
     run_add_exec(
         rules_as_rule(rules, "check"),
         command = "cargo",
@@ -33,7 +37,7 @@ def add_cargo_project(name: str, deps = [], extra_rules = []):
         command = "cargo",
         args = ["run"],
         working_directory = working_directory,
-        deps = cargo_deps,
+        # No deps, always run
     )
 
     run_add_exec(

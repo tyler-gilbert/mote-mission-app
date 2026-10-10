@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread::{self, JoinHandle},
@@ -17,6 +17,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(1);
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(4);
 const WORKER_TICK: Duration = Duration::from_millis(25);
 const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
+const DEBUG_LOG_CAPACITY: usize = 1_000;
 
 #[derive(Clone, Default)]
 pub(crate) struct LatestTelemetry {
@@ -30,6 +31,10 @@ pub(crate) struct LatestTelemetry {
     pub imu_received_at: Option<Instant>,
     pub lidar_scan: Option<router::Scan>,
     pub lidar_scan_received_at: Option<Instant>,
+    pub debug: Option<router::Status>,
+    pub debug_packets_lost: u64,
+    pub debug_logs: VecDeque<String>,
+    last_debug_sequence: Option<u32>,
 }
 
 impl LatestTelemetry {
@@ -54,6 +59,24 @@ impl LatestTelemetry {
             router::Message::LidarScan(value) => {
                 self.lidar_scan = Some(value);
                 self.lidar_scan_received_at = Some(Instant::now());
+            }
+            router::Message::Debug(value) => {
+                if let Some(previous_sequence) = self.last_debug_sequence {
+                    if let Some(lost) = sequence_gap(previous_sequence, value.sequence) {
+                        self.debug_packets_lost += u64::from(lost);
+                        self.last_debug_sequence = Some(value.sequence);
+                    }
+                } else {
+                    self.last_debug_sequence = Some(value.sequence);
+                }
+
+                if !value.log.is_empty() {
+                    if self.debug_logs.len() == DEBUG_LOG_CAPACITY {
+                        self.debug_logs.pop_front();
+                    }
+                    self.debug_logs.push_back(value.log.to_string());
+                }
+                self.debug = Some(value);
             }
             _ => return false,
         }
@@ -443,6 +466,10 @@ fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapsh
             }
         }
 
+        if session.is_none() {
+            state.latest_telemetry.debug = None;
+        }
+
         let now = Instant::now();
         if dirty || now >= next_snapshot {
             match events.try_send(state.snapshot(session.as_ref())) {
@@ -674,6 +701,15 @@ fn receive_messages(session: &mut ActiveSession, state: &mut WorkerState) -> Res
     Ok(state_changed)
 }
 
+fn sequence_gap(previous: u32, current: u32) -> Option<u32> {
+    let delta = current.wrapping_sub(previous);
+    if delta == 0 || delta >= (1 << 31) {
+        None
+    } else {
+        Some(delta - 1)
+    }
+}
+
 fn pubsub_lidar_scan(scan: &[mote_to_host::Point]) -> router::Scan {
     let point_cloud = scan
         .iter()
@@ -727,5 +763,28 @@ fn close_session(session: &mut Option<ActiveSession>) -> Option<String> {
         .err()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sequence_gap;
+
+    #[test]
+    fn sequence_gap_counts_missing_forward_packets() {
+        assert_eq!(sequence_gap(10, 11), Some(0));
+        assert_eq!(sequence_gap(10, 14), Some(3));
+    }
+
+    #[test]
+    fn sequence_gap_handles_wraparound() {
+        assert_eq!(sequence_gap(u32::MAX, 0), Some(0));
+        assert_eq!(sequence_gap(u32::MAX - 1, 1), Some(2));
+    }
+
+    #[test]
+    fn sequence_gap_ignores_duplicates_and_out_of_order_packets() {
+        assert_eq!(sequence_gap(10, 10), None);
+        assert_eq!(sequence_gap(10, 9), None);
     }
 }

@@ -9,7 +9,7 @@ use mote_api::{
     messages::router,
     work::{control, guidance, navigation},
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 #[derive(Default)]
 struct HarnessContext {
@@ -21,6 +21,7 @@ struct HarnessContext {
     position: Option<router::Position>,
     reference_frame: Option<router::ReferenceFrame>,
     telemetry_selection: router::TelemetrySelection,
+    debug: router::Status,
     telemetry: Vec<router::Message>,
     positions: Vec<router::Position>,
     guidance: Vec<router::Guidance>,
@@ -55,6 +56,7 @@ impl HarnessContext {
                 None,
                 Some(imu),
                 reference_frame,
+                &mut self.debug,
             )
         });
         self.collect_navigation_reports();
@@ -74,6 +76,7 @@ impl HarnessContext {
                 Some(scan),
                 None,
                 reference_frame,
+                &mut self.debug,
             )
         });
         self.collect_navigation_reports();
@@ -94,7 +97,9 @@ impl HarnessContext {
 
     fn handle_update(&mut self, timestamp: units::Time) {
         if let (Some(route), Some(position)) = (self.route.as_ref(), self.position.as_ref()) {
-            let guidance = self.guidance_context.update(timestamp, position, route);
+            let guidance =
+                self.guidance_context
+                    .update(timestamp, position, route, &mut self.debug);
             if let Some(guidance) = guidance {
                 if self.telemetry_selection.is_send_guidance() {
                     self.telemetry
@@ -102,7 +107,10 @@ impl HarnessContext {
                 }
                 self.guidance.push(guidance.clone());
 
-                if let Some(control) = self.control_context.update(timestamp, Some(guidance)) {
+                if let Some(control) =
+                    self.control_context
+                        .update(timestamp, Some(guidance), &mut self.debug)
+                {
                     if self.telemetry_selection.is_send_control() {
                         self.telemetry
                             .push(router::Message::Control(control.clone()));
@@ -166,7 +174,7 @@ struct DumpCorner {
 
 #[derive(Serialize)]
 struct DumpPose {
-    timestamp_ms: f32,
+    timestamp_s: f32,
     latitude_deg: f32,
     longitude_deg: f32,
     heading_deg: f32,
@@ -176,7 +184,7 @@ struct DumpPose {
 struct DumpLine {
     input: String,
     input_format: &'static str,
-    timestamp_ms: f32,
+    timestamp_s: f32,
     filled_bins: u16,
     corners: Vec<DumpCorner>,
     pose: Option<DumpPose>,
@@ -327,7 +335,7 @@ fn dump_lines_for(
         .map(|report| DumpLine {
             input: input_path.display().to_string(),
             input_format: input.format.name(),
-            timestamp_ms: report.timestamp.into(),
+            timestamp_s: report.timestamp.into(),
             filled_bins: report.filled_bins,
             corners: report
                 .corners
@@ -346,7 +354,7 @@ fn dump_lines_for(
                 })
                 .collect(),
             pose: report.pose.as_ref().map(|pose| DumpPose {
-                timestamp_ms: pose.timestamp.into(),
+                timestamp_s: pose.timestamp.into(),
                 latitude_deg: pose.coordinate.latitude.into(),
                 longitude_deg: pose.coordinate.longitude.into(),
                 heading_deg: pose.heading.into(),
@@ -472,7 +480,7 @@ pub fn guidance(
     position: &router::Position,
     route: &router::Route,
 ) -> Option<router::Guidance> {
-    guidance::Context::default().update(timestamp, position, route)
+    guidance::Context::default().update(timestamp, position, route, &mut router::Status::default())
 }
 
 /// Runs the control work context once with the supplied guidance, if available.
@@ -480,7 +488,7 @@ pub fn control(
     timestamp: units::Time,
     guidance: Option<router::Guidance>,
 ) -> Option<router::Control> {
-    control::Context::default().update(timestamp, guidance)
+    control::Context::default().update(timestamp, guidance, &mut router::Status::default())
 }
 
 fn read_telemetry_messages(path: &Path) -> Result<Vec<router::Message>> {
@@ -619,11 +627,11 @@ mod tests {
     fn canonical_navigation_fixtures_keep_the_full_scan_sequences() {
         assert_eq!(
             fixture_counts(BASELINE_JSON),
-            (119, 10_247, 312_886.0, 321_407.0)
+            (119, 10_247, 312.886, 321.407)
         );
         assert_eq!(
             fixture_counts(ROTATED_JSON),
-            (125, 10_966, 435_365.0, 445_418.0)
+            (125, 10_966, 435.365, 445.418)
         );
     }
 
@@ -728,7 +736,14 @@ mod tests {
         let frame = router::ReferenceFrame::default();
         let mut revolutions = Vec::new();
         for scan in scans {
-            context.update(scan.timestamp, None, Some(scan.clone()), None, &frame);
+            context.update(
+                scan.timestamp,
+                None,
+                Some(scan.clone()),
+                None,
+                &frame,
+                &mut router::Status::default(),
+            );
             while let Some(revolution) = context.take_completed_revolution() {
                 revolutions.push(
                     revolution
@@ -974,7 +989,14 @@ mod tests {
             let frame = router::ReferenceFrame::default();
             let mut observations = 0;
             for scan in scans {
-                context.update(scan.timestamp, None, Some(scan), None, &frame);
+                context.update(
+                    scan.timestamp,
+                    None,
+                    Some(scan),
+                    None,
+                    &frame,
+                    &mut router::Status::default(),
+                );
                 while let Some(revolution) = context.take_completed_revolution() {
                     println!("{name}: revolution bins={}", revolution.points().count());
                     let corners = navigation::detect_corners(&revolution);
@@ -1146,7 +1168,14 @@ mod tests {
             let mut context = navigation::Context::default();
             let mut fixes = Vec::new();
             for scan in scans {
-                context.update(scan.timestamp, None, Some(scan), None, &frame);
+                context.update(
+                    scan.timestamp,
+                    None,
+                    Some(scan),
+                    None,
+                    &frame,
+                    &mut router::Status::default(),
+                );
                 while let Some(revolution) = context.take_completed_revolution() {
                     let corners = navigation::detect_corners(&revolution);
                     if let Some(pose) = navigation::fix_from_corners(&frame, &corners, None) {
@@ -1189,7 +1218,14 @@ mod tests {
         scans
             .iter()
             .filter_map(|scan| {
-                context.update(scan.timestamp, None, Some(scan.clone()), None, frame)
+                context.update(
+                    scan.timestamp,
+                    None,
+                    Some(scan.clone()),
+                    None,
+                    frame,
+                    &mut router::Status::default(),
+                )
             })
             .collect()
     }
@@ -1280,11 +1316,16 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let imu = phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 1.0));
-        assert!(
-            context
-                .update(units::Time::new(100.0), None, None, Some(imu), &frame,)
-                .is_none()
-        );
+        assert!(context
+            .update(
+                units::Time::new(0.1),
+                None,
+                None,
+                Some(imu),
+                &frame,
+                &mut router::Status::default(),
+            )
+            .is_none());
     }
 
     #[test]
@@ -1292,24 +1333,33 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let seed = phase_five_seed_position(&frame);
-        let _ = context.update(seed.timestamp, Some(&seed), None, None, &frame);
+        let _ = context.update(
+            seed.timestamp,
+            Some(&seed),
+            None,
+            None,
+            &frame,
+            &mut router::Status::default(),
+        );
         let _ = context.update(
             units::Time::new(0.0),
             None,
             None,
             Some(phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
             &frame,
+            &mut router::Status::default(),
         );
 
         let mut last_position = None;
-        for timestamp in (100..=1_000).step_by(100) {
+        for step in 1..=10 {
             let imu = phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 1.0));
             if let Some(position) = context.update(
-                units::Time::new(timestamp as f32),
+                units::Time::new(step as f32 / 10.0),
                 None,
                 None,
                 Some(imu),
                 &frame,
+                &mut router::Status::default(),
             ) {
                 last_position = Some(position);
             }
@@ -1327,7 +1377,14 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let seed = phase_five_seed_position(&frame);
-        let _ = context.update(seed.timestamp, Some(&seed), None, None, &frame);
+        let _ = context.update(
+            seed.timestamp,
+            Some(&seed),
+            None,
+            None,
+            &frame,
+            &mut router::Status::default(),
+        );
 
         let _ = context.update(
             units::Time::new(0.0),
@@ -1335,14 +1392,16 @@ mod tests {
             None,
             Some(phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))),
             &frame,
+            &mut router::Status::default(),
         );
         let position = context
             .update(
-                units::Time::new(100.0),
+                units::Time::new(0.1),
                 None,
                 None,
                 Some(phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))),
                 &frame,
+                &mut router::Status::default(),
             )
             .expect("zero IMU should still emit a position");
         let east: f32 = navigation::to_local(&frame, &position.coordinate)
@@ -1362,16 +1421,24 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let seed = phase_five_seed_position(&frame);
-        let _ = context.update(seed.timestamp, Some(&seed), None, None, &frame);
+        let _ = context.update(
+            seed.timestamp,
+            Some(&seed),
+            None,
+            None,
+            &frame,
+            &mut router::Status::default(),
+        );
         let mut outputs = Vec::new();
-        for timestamp in (0..=5_000).step_by(50) {
+        for step in 0..=100 {
             let imu = phase_five_imu((0.2, -0.1, 9.81), (0.0, 0.0, 0.01));
             if let Some(position) = context.update(
-                units::Time::new(timestamp as f32),
+                units::Time::new(step as f32 / 20.0),
                 None,
                 None,
                 Some(imu),
                 &frame,
+                &mut router::Status::default(),
             ) {
                 outputs.push(position);
             }
@@ -1398,20 +1465,42 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let seed = phase_five_seed_position(&frame);
-        let _ = context.update(seed.timestamp, Some(&seed), None, None, &frame);
+        let _ = context.update(
+            seed.timestamp,
+            Some(&seed),
+            None,
+            None,
+            &frame,
+            &mut router::Status::default(),
+        );
         let imu = phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 1.0));
-        let _ = context.update(units::Time::new(0.0), None, None, Some(imu.clone()), &frame);
+        let _ = context.update(
+            units::Time::new(0.0),
+            None,
+            None,
+            Some(imu.clone()),
+            &frame,
+            &mut router::Status::default(),
+        );
         let first = context
             .update(
-                units::Time::new(1_000.0),
+                units::Time::new(1.0),
                 None,
                 None,
                 Some(imu.clone()),
                 &frame,
+                &mut router::Status::default(),
             )
             .expect("clamped gap should emit a position");
         let second = context
-            .update(units::Time::new(1_100.0), None, None, Some(imu), &frame)
+            .update(
+                units::Time::new(1.1),
+                None,
+                None,
+                Some(imu),
+                &frame,
+                &mut router::Status::default(),
+            )
             .expect("next output period should emit a position");
         let first_heading: f32 = first.heading.into();
         let second_heading: f32 = second.heading.into();
@@ -1425,17 +1514,16 @@ mod tests {
     #[test]
     fn context_update_without_a_scan_does_not_create_a_revolution() {
         let mut context = navigation::Context::default();
-        assert!(
-            context
-                .update(
-                    units::Time::new(0.0),
-                    None,
-                    None,
-                    None,
-                    &router::ReferenceFrame::default(),
-                )
-                .is_none()
-        );
+        assert!(context
+            .update(
+                units::Time::new(0.0),
+                None,
+                None,
+                None,
+                &router::ReferenceFrame::default(),
+                &mut router::Status::default(),
+            )
+            .is_none());
         assert!(context.current_revolution().is_none());
         assert_eq!(context.revolution_wraps(), 0);
     }

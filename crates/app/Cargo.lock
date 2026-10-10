@@ -2484,6 +2484,7 @@ dependencies = [
  "defmt 1.1.1",
  "heapless",
  "libm",
+ "num-traits",
  "postcard",
  "sci-units",
  "serde",

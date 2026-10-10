@@ -56,17 +56,21 @@ pub(crate) fn render_connection_status(ui: &mut UiRoot<'_>, connection: &Connect
     let (icon, tooltip, variant) = match connection {
         ConnectionStatus::Disconnected => (
             SvgIcon::WifiOff,
-            "Disconnected from a Mote".to_owned(),
+            "Not connected to a Mote".to_owned(),
             bee_ui::prelude::Variant::Secondary,
         ),
-        ConnectionStatus::Connecting { uid, .. } => (
+        ConnectionStatus::Connecting { uid, endpoint } => (
             SvgIcon::Wifi,
-            format!("Connecting to {uid}"),
+            format!("Connecting to {uid} at {endpoint}"),
             bee_ui::prelude::Variant::Warning,
         ),
-        ConnectionStatus::Connected { uid, .. } => (
+        ConnectionStatus::Connected {
+            uid,
+            endpoint,
+            last_seen_ago_ms,
+        } => (
             SvgIcon::Wifi,
-            format!("Connected to {uid}"),
+            format!("Connected to {uid} at {endpoint}; last message {last_seen_ago_ms} ms ago"),
             bee_ui::prelude::Variant::Success,
         ),
         ConnectionStatus::Error(error) => (
@@ -75,13 +79,8 @@ pub(crate) fn render_connection_status(ui: &mut UiRoot<'_>, connection: &Connect
             bee_ui::prelude::Variant::Danger,
         ),
     };
-    ui.button(
-        Button::new("")
-            .variant(variant)
-            .icon(icon)
-            .disabled()
-            .hover_text(tooltip),
-    );
+    ui.button(Button::new("").variant(variant).icon(icon).disabled())
+        .on_disabled_hover_text(tooltip);
 }
 
 pub(crate) fn render(
@@ -116,7 +115,12 @@ pub(crate) fn render(
                     actions.push(UiAction::SelectPanel(panel));
                 }
             }
-            control::render(ui, &mut context.control, ui_state);
+            control::render(
+                ui,
+                &mut context.control,
+                context.settings.expected_hashes(),
+                ui_state,
+            );
             render_connection_status(ui, &connection);
         });
 
@@ -133,7 +137,9 @@ pub(crate) fn render(
             ControlPanel::Telemetry => {
                 telemetry::render(ui, &mut context.telemetry, ui_state);
             }
-            ControlPanel::Settings => settings::render(ui, &mut context.settings, ui_state),
+            ControlPanel::Settings => {
+                settings::render(ui, &mut context.settings, &mut context.control, ui_state)
+            }
         }
     });
 

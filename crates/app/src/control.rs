@@ -1,12 +1,12 @@
 use std::{
     fs::{File, OpenOptions},
     io::{self, BufWriter, Write},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bee_ui::{
     UiRoot,
-    prelude::{Button, HStack, SpanIcon, SvgIcon},
+    prelude::{Button, HStack, SpanIcon, SvgIcon, Variant},
 };
 use eframe::egui;
 use mote_api::messages::router;
@@ -20,14 +20,19 @@ const FORWARD_SPEED_RAD_PER_S: f32 = 1.5;
 const TURN_SPEED_RAD_PER_S: f32 = 1.0;
 const STOP: (f32, f32) = (0.0, 0.0);
 
-const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 7] = [
-    ("None      ", router::TelemetrySelection::None),
-    ("Control   ", router::TelemetrySelection::Control),
-    ("Guidance  ", router::TelemetrySelection::Guidance),
-    ("Navigation", router::TelemetrySelection::Navigation),
-    ("IMU       ", router::TelemetrySelection::Imu),
-    ("LiDAR     ", router::TelemetrySelection::Lidar),
-    ("All       ", router::TelemetrySelection::All),
+const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 9] = [
+    ("None          ", router::TelemetrySelection::None),
+    ("Control       ", router::TelemetrySelection::Control),
+    ("Guidance      ", router::TelemetrySelection::Guidance),
+    ("Navigation    ", router::TelemetrySelection::Navigation),
+    ("IMU           ", router::TelemetrySelection::Imu),
+    ("Remote Control", router::TelemetrySelection::RemoteControl),
+    ("LiDAR         ", router::TelemetrySelection::Lidar),
+    (
+        "Position Inputs",
+        router::TelemetrySelection::PositionInputs,
+    ),
+    ("All           ", router::TelemetrySelection::All),
 ];
 
 pub(crate) struct Context {
@@ -37,6 +42,23 @@ pub(crate) struct Context {
     pub(crate) telemetry_selection_sent: bool,
     recorder: Option<TelemetryRecorder>,
     recording_error: Option<String>,
+    plan: Option<PlanTransfer>,
+}
+
+impl Context {
+    pub(crate) fn queue_plan(&mut self, settings: router::Settings) {
+        self.plan = Some(PlanTransfer::new(settings));
+    }
+
+    pub(crate) fn clear_plan(&mut self) {
+        self.plan = None;
+    }
+
+    pub(crate) fn plan_confirmed(&self) -> bool {
+        self.plan
+            .as_ref()
+            .is_some_and(|plan| plan.reference_confirmed && plan.route_confirmed)
+    }
 }
 
 impl Default for Context {
@@ -48,6 +70,94 @@ impl Default for Context {
             telemetry_selection_sent: false,
             recorder: None,
             recording_error: None,
+            plan: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanMessageKind {
+    ReferenceFrame,
+    Route,
+}
+
+struct PlanTransfer {
+    settings: router::Settings,
+    reference_frame_hash: u32,
+    route_hash: u32,
+    reference_sent: bool,
+    reference_confirmed: bool,
+    route_sent: bool,
+    route_confirmed: bool,
+    connected_uid: Option<String>,
+}
+
+impl PlanTransfer {
+    fn new(settings: router::Settings) -> Self {
+        let reference_frame_hash = settings.reference_frame.hash();
+        let route_hash = router::hash_route(&settings.route);
+        Self {
+            settings,
+            reference_frame_hash,
+            route_hash,
+            reference_sent: false,
+            reference_confirmed: false,
+            route_sent: false,
+            route_confirmed: false,
+            connected_uid: None,
+        }
+    }
+
+    fn reset_progress(&mut self) {
+        self.reference_sent = false;
+        self.reference_confirmed = false;
+        self.route_sent = false;
+        self.route_confirmed = false;
+    }
+
+    fn next_message(
+        &mut self,
+        debug_hashes: Option<(u32, u32)>,
+    ) -> Option<(PlanMessageKind, router::Message)> {
+        if !self.reference_confirmed
+            && debug_hashes
+                .is_some_and(|(reference_hash, _)| reference_hash == self.reference_frame_hash)
+        {
+            self.reference_confirmed = true;
+        }
+        if !self.route_confirmed
+            && debug_hashes.is_some_and(|(_, route_hash)| route_hash == self.route_hash)
+        {
+            self.route_confirmed = true;
+        }
+
+        if !self.reference_confirmed {
+            if self.reference_sent {
+                return None;
+            }
+            return Some((
+                PlanMessageKind::ReferenceFrame,
+                router::Message::ReferenceFrame(self.settings.reference_frame.clone()),
+            ));
+        }
+
+        if !self.route_confirmed {
+            if self.route_sent {
+                return None;
+            }
+            return Some((
+                PlanMessageKind::Route,
+                router::Message::Route(self.settings.route.clone()),
+            ));
+        }
+
+        None
+    }
+
+    fn mark_queued(&mut self, kind: PlanMessageKind) {
+        match kind {
+            PlanMessageKind::ReferenceFrame => self.reference_sent = true,
+            PlanMessageKind::Route => self.route_sent = true,
         }
     }
 }
@@ -102,13 +212,29 @@ impl TelemetryRecorder {
     }
 }
 
-pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut state::Context) {
+pub(crate) fn render(
+    ui: &mut UiRoot<'_>,
+    context: &mut Context,
+    expected_hashes: Option<(u32, u32)>,
+    ui_state: &mut state::Context,
+) {
     let connected = matches!(
         ui_state.snapshot.connection,
         ConnectionStatus::Connected { .. }
     );
     let selected_mode = telemetry_mode_index(&context.telemetry_selection);
     let recording = context.recorder.is_some();
+    let connected_uid = match &ui_state.snapshot.connection {
+        ConnectionStatus::Connected { uid, .. } => Some(uid.clone()),
+        _ => None,
+    };
+    process_plan(context, ui_state, connected_uid.as_deref());
+    let received_hashes = ui_state
+        .snapshot
+        .latest_telemetry
+        .debug
+        .as_ref()
+        .map(|debug| (debug.reference_frame_hash, debug.route_hash));
 
     let (remote_control_clicked, pressed, mode_changed, record_clicked) =
         ui.hstack(HStack::new().gap(4.0), |ui| {
@@ -192,6 +318,8 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
                 .button(record_button.enabled(connected || recording))
                 .clicked();
 
+            render_plan_status(ui, expected_hashes, received_hashes);
+
             (
                 remote_control_clicked,
                 pressed,
@@ -270,6 +398,93 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
 
     record_telemetry(context, ui_state);
     render_errors(ui, ui_state, context);
+}
+
+fn process_plan(context: &mut Context, ui_state: &mut state::Context, connected_uid: Option<&str>) {
+    let Some(plan) = context.plan.as_mut() else {
+        return;
+    };
+
+    match connected_uid {
+        Some(uid) if plan.connected_uid.as_deref() != Some(uid) => {
+            plan.connected_uid = Some(uid.to_owned());
+            plan.reset_progress();
+        }
+        None if plan.connected_uid.take().is_some() => plan.reset_progress(),
+        _ => {}
+    }
+
+    let Some(uid) = connected_uid else {
+        return;
+    };
+    let debug_hashes = ui_state
+        .snapshot
+        .latest_telemetry
+        .debug
+        .as_ref()
+        .map(|debug| (debug.reference_frame_hash, debug.route_hash));
+    let Some((kind, message)) = plan.next_message(debug_hashes) else {
+        return;
+    };
+
+    if send_message(context, ui_state, message) {
+        if let Some(plan) = context.plan.as_mut() {
+            plan.mark_queued(kind);
+        }
+    } else {
+        ui_state.last_error = ui_state
+            .last_error
+            .take()
+            .map(|error| format!("Could not send plan to {uid}: {error}"));
+    }
+}
+
+fn render_plan_status(
+    ui: &mut UiRoot<'_>,
+    expected_hashes: Option<(u32, u32)>,
+    received_hashes: Option<(u32, u32)>,
+) {
+    let statuses = [
+        (
+            "Reference frame",
+            SvgIcon::AspectRatio,
+            expected_hashes.map(|hashes| hashes.0),
+            received_hashes.map(|hashes| hashes.0),
+        ),
+        (
+            "Route",
+            SvgIcon::Map,
+            expected_hashes.map(|hashes| hashes.1),
+            received_hashes.map(|hashes| hashes.1),
+        ),
+    ];
+    for (label, icon, expected_hash, received_hash) in statuses {
+        let confirmed = expected_hash
+            .zip(received_hash)
+            .is_some_and(|(expected, received)| expected == received);
+        let tooltip = match (expected_hash, received_hash) {
+            (Some(expected), Some(_)) if confirmed => {
+                format!("{label} ready — local and device hashes match: {expected:#010x}")
+            }
+            (Some(expected), Some(received)) => {
+                format!("{label} hash mismatch — local: {expected:#010x}; device: {received:#010x}")
+            }
+            (Some(expected), None) => {
+                format!("Waiting for the device {label} hash — expected: {expected:#010x}")
+            }
+            (None, Some(received)) => {
+                format!("No local settings to compare — device {label} hash: {received:#010x}")
+            }
+            (None, None) => format!("No local {label} hash or device hash available"),
+        };
+        let variant = if confirmed {
+            Variant::Success
+        } else {
+            Variant::Secondary
+        };
+        ui.button(Button::new("").variant(variant).icon(icon).disabled())
+            .on_disabled_hover_text(tooltip);
+    }
 }
 
 fn send_message(
@@ -463,6 +678,87 @@ fn render_errors(ui: &mut UiRoot<'_>, ui_state: &state::Context, context: &Conte
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_settings() -> router::Settings {
+        router::Settings {
+            reference_frame: router::ReferenceFrame::default(),
+            route: router::Route::new(),
+        }
+    }
+
+    #[test]
+    fn plan_sends_reference_once_and_waits_for_its_hash() {
+        let mut plan = PlanTransfer::new(empty_settings());
+
+        let (kind, message) = plan.next_message(None).unwrap();
+        assert_eq!(kind, PlanMessageKind::ReferenceFrame);
+        assert!(matches!(message, router::Message::ReferenceFrame(_)));
+        plan.mark_queued(kind);
+
+        for _ in 0..3 {
+            assert!(plan.next_message(None).is_none());
+        }
+        assert!(plan.reference_sent);
+        assert!(!plan.reference_confirmed);
+    }
+
+    #[test]
+    fn matching_reference_hash_sends_route_once_and_waits_for_its_hash() {
+        let mut plan = PlanTransfer::new(empty_settings());
+        let (kind, _) = plan.next_message(None).unwrap();
+        plan.mark_queued(kind);
+
+        let route_mismatch = (plan.reference_frame_hash, plan.route_hash.wrapping_add(1));
+        let (kind, message) = plan.next_message(Some(route_mismatch)).unwrap();
+        assert_eq!(kind, PlanMessageKind::Route);
+        assert!(matches!(message, router::Message::Route(_)));
+        assert!(plan.reference_confirmed);
+        plan.mark_queued(kind);
+
+        for _ in 0..3 {
+            assert!(plan.next_message(Some(route_mismatch)).is_none());
+        }
+        assert!(plan.route_sent);
+        assert!(!plan.route_confirmed);
+    }
+
+    #[test]
+    fn plan_waits_for_reference_hash_before_sending_route_and_confirms_each_hash() {
+        let mut plan = PlanTransfer::new(empty_settings());
+        let hashes = (plan.reference_frame_hash, plan.route_hash);
+        let mismatched_hashes = (
+            plan.reference_frame_hash.wrapping_add(1),
+            plan.route_hash.wrapping_add(1),
+        );
+
+        let (kind, message) = plan.next_message(Some(mismatched_hashes)).unwrap();
+        assert_eq!(kind, PlanMessageKind::ReferenceFrame);
+        assert!(matches!(message, router::Message::ReferenceFrame(_)));
+        plan.mark_queued(kind);
+
+        let route_mismatch = (plan.reference_frame_hash, plan.route_hash.wrapping_add(1));
+        let (kind, message) = plan.next_message(Some(route_mismatch)).unwrap();
+        assert_eq!(kind, PlanMessageKind::Route);
+        assert!(matches!(message, router::Message::Route(_)));
+        assert!(plan.reference_confirmed);
+        assert!(!plan.route_confirmed);
+        plan.mark_queued(kind);
+
+        assert!(plan.next_message(Some(hashes)).is_none());
+        assert!(plan.route_confirmed);
+    }
+
+    #[test]
+    fn matching_device_hashes_confirm_plan_without_resending_it() {
+        let mut plan = PlanTransfer::new(empty_settings());
+        let hashes = (plan.reference_frame_hash, plan.route_hash);
+
+        assert!(plan.next_message(Some(hashes)).is_none());
+        assert!(plan.reference_confirmed);
+        assert!(plan.route_confirmed);
+        assert!(!plan.reference_sent);
+        assert!(!plan.route_sent);
+    }
 
     #[test]
     fn telemetry_modes_cover_the_router_selection_enum() {

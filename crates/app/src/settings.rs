@@ -1,22 +1,23 @@
-use std::fs;
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 use bee_ui::{
     UiRoot,
-    prelude::{Alert, Badge, Button, Card, FormControl, HStack, Label, SvgIcon, Text},
+    prelude::{Alert, Badge, Button, Card, FormControl, HStack, Label, SvgIcon, Text, Variant},
 };
 use eframe::egui;
 use mote_api::messages::router;
 
-use crate::{
-    state,
-    transport::{ConnectionStatus, WorkerCommand},
-};
+use crate::{control, state, transport::ConnectionStatus};
 
 #[derive(Default)]
 pub(crate) struct Context {
     settings_path: String,
     settings_preview: Option<router::Settings>,
     settings_result: Option<Result<String, String>>,
+    send_disabled_until: Option<Instant>,
 }
 
 impl Context {
@@ -47,11 +48,126 @@ impl Context {
             .as_ref()
             .map(|settings| &settings.route)
     }
+
+    pub(crate) fn expected_hashes(&self) -> Option<(u32, u32)> {
+        let settings = self.settings_preview.as_ref()?;
+        Some((
+            settings.reference_frame.hash(),
+            router::hash_route(&settings.route),
+        ))
+    }
 }
 
-pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut state::Context) {
+pub(crate) fn render(
+    ui: &mut UiRoot<'_>,
+    context: &mut Context,
+    control_context: &mut control::Context,
+    ui_state: &mut state::Context,
+) {
     ui.label(Label::new("Settings").large());
     ui.text(Text::new("Adjust the app appearance and interface scale.").subtle());
+
+    let connected = matches!(
+        ui_state.snapshot.connection,
+        ConnectionStatus::Connected { .. }
+    );
+    let connected_uid = match &ui_state.snapshot.connection {
+        ConnectionStatus::Connected { uid, .. } => Some(uid.clone()),
+        _ => None,
+    };
+
+    ui.card(Card::with_title("Mission settings"), |ui| {
+        ui.text(Text::new(
+            "Load a JSON settings file containing both the reference frame and route. Settings can be prepared while disconnected.",
+        ));
+        ui.label(Label::new("Settings JSON file path").small());
+        if ui
+            .form_control(&mut context.settings_path, FormControl::new())
+            .changed()
+        {
+            context.settings_result = None;
+            context.settings_preview = load_settings(&context.settings_path).ok();
+            control_context.clear_plan();
+        }
+
+        if let Some(settings) = context.settings_preview.as_ref() {
+            ui.label(Label::new("Expected device hashes").small());
+            ui.hstack(HStack::new().wrap(true), |ui| {
+                ui.badge(
+                    Badge::info(format!(
+                        "Reference frame: {:#010x}",
+                        settings.reference_frame.hash()
+                    ))
+                    .as_pill(),
+                );
+                ui.badge(
+                    Badge::info(format!(
+                        "Route: {:#010x}",
+                        router::hash_route(&settings.route)
+                    ))
+                    .as_pill(),
+                );
+            });
+            ui.text(Text::new("Compare these with the hashes reported by the device.").subtle());
+        }
+
+        let cooldown_remaining = context
+            .send_disabled_until
+            .map(|disabled_until| disabled_until.saturating_duration_since(Instant::now()))
+            .unwrap_or_default();
+        if !cooldown_remaining.is_zero() {
+            ui.context().request_repaint_after(cooldown_remaining);
+        }
+
+        let send_clicked = ui.hstack(HStack::new().gap(4.0).wrap(true), |ui| {
+            let clicked = ui
+                .button(
+                    Button::primary("Send settings")
+                        .icon(SvgIcon::Send)
+                        .enabled(connected && cooldown_remaining.is_zero()),
+                )
+                .clicked();
+            let local_variant = if context.settings_preview.is_some() {
+                Variant::Success
+            } else {
+                Variant::Secondary
+            };
+            ui.button(
+                Button::new("Local")
+                    .variant(local_variant)
+                    .icon(SvgIcon::CheckCircleFill)
+                    .disabled()
+                    .hover_text("Settings loaded locally"),
+            );
+            if !control_context.plan_confirmed()
+                && let Some(Ok(message)) = context.settings_result.as_ref()
+            {
+                ui.text(Text::new(message.as_str()).subtle());
+            }
+            clicked
+        });
+
+        if send_clicked {
+            context.send_disabled_until = Some(Instant::now() + Duration::from_secs(1));
+            ui.context().request_repaint_after(Duration::from_secs(1));
+            context.settings_result = Some(match load_settings(&context.settings_path) {
+                Ok(settings) => {
+                    context.settings_preview = Some(settings.clone());
+                    control_context.queue_plan(settings);
+                    Ok(format!(
+                        "Plan queued for {}. Waiting for device confirmation.",
+                        connected_uid.as_deref().unwrap_or("Mote")
+                    ))
+                }
+                Err(error) => {
+                    context.settings_preview = None;
+                    control_context.clear_plan();
+                    Err(error)
+                }
+            });
+        }
+        render_send_result(ui, context.settings_result.as_ref());
+    });
 
     ui.card(Card::with_title("Appearance"), |ui| {
         ui.label(Label::new("Color theme").small());
@@ -105,57 +221,6 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         });
         ui.text(Text::new("Zoom range: 50%–300%.").subtle());
     });
-
-    let connected = matches!(
-        ui_state.snapshot.connection,
-        ConnectionStatus::Connected { .. }
-    );
-    let connected_uid = match &ui_state.snapshot.connection {
-        ConnectionStatus::Connected { uid, .. } => Some(uid.clone()),
-        _ => None,
-    };
-
-    ui.card(Card::with_title("Mission settings"), |ui| {
-        ui.text(Text::new(
-            "Load a JSON settings file containing both the reference frame and route. Settings can be prepared while disconnected.",
-        ));
-        ui.label(Label::new("Settings JSON file path").small());
-        if ui
-            .form_control(&mut context.settings_path, FormControl::new())
-            .changed()
-        {
-            context.settings_result = None;
-            context.settings_preview = load_settings(&context.settings_path).ok();
-        }
-        if context.settings_preview.is_some() {
-            ui.badge(Badge::success("✓ Settings loaded").as_pill());
-        }
-
-        if ui
-            .button(
-                Button::primary("Send settings")
-                    .icon(SvgIcon::Send)
-                    .enabled(connected),
-            )
-            .clicked()
-        {
-            context.settings_result = Some(match load_settings(&context.settings_path) {
-                Ok(settings) => {
-                    context.settings_preview = Some(settings.clone());
-                    send_settings(
-                        ui_state,
-                        connected_uid.as_deref().unwrap_or("Mote"),
-                        settings,
-                    )
-                }
-                Err(error) => {
-                    context.settings_preview = None;
-                    Err(error)
-                }
-            });
-        }
-        render_send_result(ui, context.settings_result.as_ref());
-    });
 }
 
 fn load_settings(path: &str) -> Result<router::Settings, String> {
@@ -174,43 +239,9 @@ fn parse_settings(input: &str) -> Result<router::Settings, serde_json::Error> {
     serde_json::from_str(input)
 }
 
-fn send_settings(
-    ui_state: &mut state::Context,
-    uid: &str,
-    settings: router::Settings,
-) -> Result<String, String> {
-    send_router_message(
-        ui_state,
-        uid,
-        router::Message::ReferenceFrame(settings.reference_frame.clone()),
-        "Reference frame",
-    )?;
-    send_router_message(
-        ui_state,
-        uid,
-        router::Message::Route(settings.route.clone()),
-        "Route",
-    )?;
-    Ok(format!("Settings send requests queued for {uid}."))
-}
-
-fn send_router_message(
-    ui_state: &mut state::Context,
-    uid: &str,
-    message: router::Message,
-    label: &str,
-) -> Result<String, String> {
-    ui_state
-        .worker
-        .command(WorkerCommand::PubSub(message))
-        .map(|()| format!("{label} send request queued for {uid}."))
-}
-
 fn render_send_result(ui: &mut UiRoot<'_>, result: Option<&Result<String, String>>) {
-    match result {
-        Some(Ok(message)) => ui.alert(Alert::success(message.as_str())),
-        Some(Err(error)) => ui.alert(Alert::danger(error.as_str())),
-        None => {}
+    if let Some(Err(error)) = result {
+        ui.alert(Alert::danger(error.as_str()));
     }
 }
 
