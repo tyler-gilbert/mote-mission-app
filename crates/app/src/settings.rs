@@ -270,6 +270,6 @@ mod tests {
         assert!(reference_frame.global_diagonal == units::Length::new(20_000.0));
         assert!(reference_frame.local_diagonal == units::Length::new(3.0));
         assert_eq!(settings.route.len(), 2);
-        assert!(settings.route[0].latitude == units::imperial::Degrees::new(37.07924456));
+        assert!(settings.route[0].latitude == units::imperial::Degrees::new(37.079_243));
     }
 }

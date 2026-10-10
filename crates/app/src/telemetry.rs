@@ -3,13 +3,15 @@ use std::{collections::VecDeque, time::Instant};
 use bee_ui::{
     UiRoot,
     prelude::{
-        Card, DisclosureState, Dropdown, DropdownItem, PlotPoint, TimeSeries, TimeSeriesDataset,
-        TimeSeriesPlotProps, ViewportState,
+        Card, Col, DisclosureState, Dropdown, DropdownItem, PlotPoint, Row, TimeSeries,
+        TimeSeriesDataset, TimeSeriesPlotProps, ViewportState,
     },
 };
 
 mod imu;
 mod lidar;
+
+use mote_api::messages::router;
 
 use crate::state;
 
@@ -18,6 +20,14 @@ const POSITION_PLOT_ID: &str = "mote.telemetry.position";
 const CONTROL_PLOT_ID: &str = "mote.telemetry.control";
 
 const PLOT_CONTROLS_HEIGHT: f32 = 160.0;
+
+const COUNTER_COLUMNS: usize = 2;
+const COUNTER_COLUMN_GAP: f32 = 24.0;
+const COUNTER_LABEL_VALUE_GAP: f32 = 12.0;
+
+const STATUS_MAIN_SPAN: u8 = 8;
+const STATUS_LOG_SPAN: u8 = 4;
+const STATUS_GUTTER: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TelemetryPlot {
@@ -101,51 +111,57 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         TelemetryPlot::Guidance => render_live_plot(
             ui,
             &mut context.guidance,
-            GUIDANCE_PLOT_ID,
-            &[("heading", "Heading"), ("distance", "Distance")],
-            telemetry.guidance.as_ref().map(|value| {
-                [
-                    quantity_value(value.heading),
-                    quantity_value(value.distance),
-                ]
-            }),
-            telemetry.guidance_received_at,
-            "Guidance",
-            "Value",
-            plot_height,
+            LivePlotOptions {
+                id: GUIDANCE_PLOT_ID,
+                series: &[("heading", "Heading"), ("distance", "Distance")],
+                values: telemetry.guidance.as_ref().map(|value| {
+                    [
+                        quantity_value(value.heading),
+                        quantity_value(value.distance),
+                    ]
+                }),
+                received_at: telemetry.guidance_received_at,
+                waiting_for: "Guidance",
+                y_axis: "Value",
+                height: plot_height,
+            },
         ),
         TelemetryPlot::Position => render_live_plot(
             ui,
             &mut context.position,
-            POSITION_PLOT_ID,
-            &[("north", "North"), ("east", "East"), ("heading", "Heading")],
-            telemetry.position.as_ref().map(|value| {
-                [
-                    quantity_value(value.coordinate.latitude),
-                    quantity_value(value.coordinate.longitude),
-                    quantity_value(value.heading),
-                ]
-            }),
-            telemetry.position_received_at,
-            "Navigation",
-            "Value",
-            plot_height,
+            LivePlotOptions {
+                id: POSITION_PLOT_ID,
+                series: &[("north", "North"), ("east", "East"), ("heading", "Heading")],
+                values: telemetry.position.as_ref().map(|value| {
+                    [
+                        quantity_value(value.coordinate.latitude),
+                        quantity_value(value.coordinate.longitude),
+                        quantity_value(value.heading),
+                    ]
+                }),
+                received_at: telemetry.position_received_at,
+                waiting_for: "Navigation",
+                y_axis: "Value",
+                height: plot_height,
+            },
         ),
         TelemetryPlot::Control => render_live_plot(
             ui,
             &mut context.control,
-            CONTROL_PLOT_ID,
-            &[("left", "Left"), ("right", "Right")],
-            telemetry.control.as_ref().map(|value| {
-                [
-                    quantity_value(value.motor_drive.left),
-                    quantity_value(value.motor_drive.right),
-                ]
-            }),
-            telemetry.control_received_at,
-            "Control",
-            "Angular velocity",
-            plot_height,
+            LivePlotOptions {
+                id: CONTROL_PLOT_ID,
+                series: &[("left", "Left"), ("right", "Right")],
+                values: telemetry.control.as_ref().map(|value| {
+                    [
+                        quantity_value(value.motor_drive.left),
+                        quantity_value(value.motor_drive.right),
+                    ]
+                }),
+                received_at: telemetry.control_received_at,
+                waiting_for: "Control",
+                y_axis: "Angular velocity",
+                height: plot_height,
+            },
         ),
         TelemetryPlot::Imu => imu::render(ui, &mut context.imu, ui_state, plot_height),
         TelemetryPlot::Lidar => {
@@ -158,6 +174,23 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
 }
 
 fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
+    ui.row(
+        Row::new()
+            .gutter_x(STATUS_GUTTER)
+            .id_salt("mote.telemetry.debug.row"),
+        |ui| {
+            ui.col(Col::new().xs(STATUS_MAIN_SPAN), |ui| {
+                render_packet_status(ui, telemetry);
+                render_counters(ui, telemetry);
+            });
+            ui.col(Col::new().xs(STATUS_LOG_SPAN), |ui| {
+                render_log(ui, telemetry);
+            });
+        },
+    );
+}
+
+fn render_packet_status(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
     ui.card(Card::with_title("Packet status"), |ui| {
         ui.raw(|raw_ui| {
             raw_ui.horizontal_wrapped(|raw_ui| {
@@ -194,33 +227,78 @@ fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::Lat
             });
         });
     });
+}
 
-    ui.card(Card::with_title("Counters"), |ui| {
+fn render_counters(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
+    ui.card(Card::with_title("Counters").fill_height(), |ui| {
         if let Some(debug) = telemetry.debug.as_ref() {
-            let counters = serde_json::to_value(&debug.counters).unwrap_or_default();
-            if let Some(counters) = counters.as_object() {
-                ui.raw(|raw_ui| {
-                    eframe::egui::Grid::new("mote.telemetry.debug.counters")
-                        .striped(true)
-                        .show(raw_ui, |raw_ui| {
-                            for (key, value) in counters {
-                                raw_ui.strong(key);
-                                raw_ui.label(value.to_string());
-                                raw_ui.end_row();
-                            }
-                        });
-                });
-            }
+            let rows = counter_rows(&debug.counters);
+            ui.raw(|raw_ui| {
+                eframe::egui::ScrollArea::vertical()
+                    .id_salt("mote.telemetry.debug.counters.scroll")
+                    .auto_shrink([false, false])
+                    .show(raw_ui, |raw_ui| {
+                        let row_spacing = raw_ui.spacing().item_spacing.y;
+                        let column_width = ((raw_ui.available_width()
+                            - COUNTER_COLUMN_GAP * (COUNTER_COLUMNS - 1) as f32)
+                            / COUNTER_COLUMNS as f32)
+                            .max(0.0);
+                        let row_height = raw_ui.spacing().interact_size.y;
+                        eframe::egui::Grid::new("mote.telemetry.debug.counters")
+                            .num_columns(COUNTER_COLUMNS)
+                            .spacing([COUNTER_COLUMN_GAP, row_spacing])
+                            .min_col_width(column_width)
+                            .max_col_width(column_width)
+                            .striped(true)
+                            .show(raw_ui, |raw_ui| {
+                                for row in &rows {
+                                    for (key, value) in row {
+                                        // Size each cell to its column so long counter names
+                                        // truncate instead of widening the card. The value is
+                                        // pinned to the right edge and the name fills the rest
+                                        // from the left edge.
+                                        raw_ui.allocate_ui_with_layout(
+                                            eframe::egui::vec2(column_width, row_height),
+                                            eframe::egui::Layout::right_to_left(
+                                                eframe::egui::Align::Center,
+                                            ),
+                                            |cell_ui| {
+                                                cell_ui.label(value);
+                                                cell_ui.add_space(COUNTER_LABEL_VALUE_GAP);
+                                                cell_ui.with_layout(
+                                                    eframe::egui::Layout::left_to_right(
+                                                        eframe::egui::Align::Center,
+                                                    ),
+                                                    |label_ui| {
+                                                        label_ui.add(
+                                                            eframe::egui::Label::new(
+                                                                eframe::egui::RichText::new(key)
+                                                                    .strong(),
+                                                            )
+                                                            .truncate(),
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    }
+                                    raw_ui.end_row();
+                                }
+                            });
+                    });
+            });
         } else {
             ui.text(bee_ui::prelude::Text::new("Waiting for debug counters…").subtle());
         }
     });
+}
 
-    ui.card(Card::with_title("Log"), |ui| {
+fn render_log(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
+    ui.card(Card::with_title("Log").fill_height(), |ui| {
         ui.raw(|raw_ui| {
             eframe::egui::ScrollArea::vertical()
+                .id_salt("mote.telemetry.debug.log.scroll")
                 .auto_shrink([false, false])
-                .max_height(260.0)
                 .stick_to_bottom(true)
                 .show(raw_ui, |raw_ui| {
                     if telemetry.debug_logs.is_empty() {
@@ -233,6 +311,17 @@ fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::Lat
                 });
         });
     });
+}
+
+fn counter_rows(counters: &router::StatusCounters) -> Vec<Vec<(String, String)>> {
+    let Ok(serde_json::Value::Object(counters)) = serde_json::to_value(counters) else {
+        return Vec::new();
+    };
+    let entries: Vec<_> = counters
+        .into_iter()
+        .map(|(key, value)| (key, value.to_string()))
+        .collect();
+    entries.chunks(COUNTER_COLUMNS).map(<[_]>::to_vec).collect()
 }
 
 const PLOT_POINT_CAPACITY: usize = 10_000;
@@ -308,26 +397,37 @@ fn quantity_value(quantity: impl Into<f32>) -> f64 {
     f64::from(quantity.into())
 }
 
+struct LivePlotOptions<const SERIES_COUNT: usize> {
+    id: &'static str,
+    series: &'static [(&'static str, &'static str)],
+    values: Option<[f64; SERIES_COUNT]>,
+    received_at: Option<Instant>,
+    waiting_for: &'static str,
+    y_axis: &'static str,
+    height: f32,
+}
+
 fn render_live_plot<const SERIES_COUNT: usize>(
     ui: &mut UiRoot<'_>,
     context: &mut LivePlotContext,
-    id: &'static str,
-    series: &[(&str, &str)],
-    values: Option<[f64; SERIES_COUNT]>,
-    received_at: Option<Instant>,
-    waiting_for: &str,
-    y_axis: &str,
-    height: f32,
+    options: LivePlotOptions<SERIES_COUNT>,
 ) {
-    if let (Some(values), Some(received_at)) = (values, received_at) {
+    if let (Some(values), Some(received_at)) = (options.values, options.received_at) {
         context.history.push_sample(received_at, &values);
     }
 
-    let dataset = context.history.dataset(id, series);
+    let dataset = context.history.dataset(options.id, options.series);
     let waiting_for_data = dataset.is_empty();
-    render_time_series_plot(ui, &mut context.viewport, id, &dataset, y_axis, height);
+    render_time_series_plot(
+        ui,
+        &mut context.viewport,
+        options.id,
+        &dataset,
+        options.y_axis,
+        options.height,
+    );
     if waiting_for_data {
-        ui.raw(|raw_ui| raw_ui.label(format!("Waiting for {waiting_for} telemetry…")));
+        ui.raw(|raw_ui| raw_ui.label(format!("Waiting for {} telemetry…", options.waiting_for)));
     }
 }
 
@@ -371,5 +471,24 @@ mod tests {
         assert_eq!(dataset.series[0].points[0], PlotPoint::new(0.0, 1.0));
         assert_eq!(dataset.series[0].points[1], PlotPoint::new(0.25, 3.0));
         assert_eq!(dataset.series[1].points[1], PlotPoint::new(0.25, 4.0));
+    }
+
+    #[test]
+    fn counter_rows_group_counters_into_two_columns() {
+        let counters = router::StatusCounters {
+            lidar_scan: 7,
+            ..router::StatusCounters::default()
+        };
+        let rows = counter_rows(&counters);
+
+        let total: usize = rows.iter().map(Vec::len).sum();
+        assert_eq!(total, 10);
+        assert_eq!(rows.len(), 5);
+        assert!(rows.iter().all(|row| row.len() == COUNTER_COLUMNS));
+        assert!(
+            rows.iter()
+                .flatten()
+                .any(|(key, value)| key == "lidar_scan" && value == "7")
+        );
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::{self, BufWriter, Write},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bee_ui::{
@@ -289,7 +289,7 @@ pub(crate) fn render(
 
             let mut selected_mode = selected_mode;
             let mode_changed = ui.raw(|raw_ui| {
-                let changed = raw_ui
+                raw_ui
                     .add_enabled_ui(connected, |raw_ui| {
                         let before = selected_mode;
                         egui::ComboBox::from_id_salt("mote.control.telemetry_mode")
@@ -301,8 +301,7 @@ pub(crate) fn render(
                             });
                         selected_mode != before
                     })
-                    .inner;
-                changed
+                    .inner
             });
 
             let record_button = if recording {

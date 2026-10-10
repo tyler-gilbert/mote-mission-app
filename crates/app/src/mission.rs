@@ -50,7 +50,7 @@ pub(crate) fn render(
             let points = corners
                 .iter()
                 .map(|corner| {
-                    let projected = projector.project(corner.clone());
+                    let projected = projector.project(*corner);
                     egui::pos2(projected.x, projected.y)
                 })
                 .collect();

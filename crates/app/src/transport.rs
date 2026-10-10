@@ -143,7 +143,7 @@ impl TransportWorker {
     }
 
     pub(crate) fn command(&self, command: WorkerCommand) -> Result<(), String> {
-        self.send_request(WorkerRequest::Command(command))
+        self.send_request(WorkerRequest::Command(Box::new(command)))
     }
 
     pub(crate) fn refresh(&self) -> Result<(), String> {
@@ -191,7 +191,7 @@ pub(crate) enum WorkerCommand {
 }
 
 enum WorkerRequest {
-    Command(WorkerCommand),
+    Command(Box<WorkerCommand>),
     Refresh,
     Connect(String),
     Disconnect,
@@ -356,16 +356,12 @@ fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapsh
                     };
                     dirty = true;
                 }
-                Ok(WorkerRequest::Command(WorkerCommand::HostToMote(message))) => {
+                Ok(WorkerRequest::Command(command)) => {
+                    let message = match *command {
+                        WorkerCommand::HostToMote(message) => message,
+                        WorkerCommand::PubSub(message) => host_to_mote::Message::Router(message),
+                    };
                     if let Some(error) = send_active_message(&mut session, message) {
-                        state.connection = ConnectionStatus::Error(error);
-                    }
-                    dirty = true;
-                }
-                Ok(WorkerRequest::Command(WorkerCommand::PubSub(message))) => {
-                    if let Some(error) =
-                        send_active_message(&mut session, host_to_mote::Message::Router(message))
-                    {
                         state.connection = ConnectionStatus::Error(error);
                     }
                     dirty = true;
