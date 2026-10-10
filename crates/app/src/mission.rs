@@ -1,18 +1,25 @@
 use bee_ui::{
     UiRoot,
-    prelude::{Map, MapRoute, Position, lon_lat},
+    prelude::{Map, MapIcon, MapRoute, Position, SpanIcon, SvgIcon, lon_lat},
 };
 use eframe::egui;
+use mote_api::messages::router;
 
 use crate::settings;
 
 const FALLBACK_CENTER: (f64, f64) = (34.9054, -117.8838);
 const EARTH_RADIUS_METERS: f64 = 6_371_008.8;
+const AIRPLANE_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 40, 40);
 
 #[derive(Default)]
 pub(crate) struct Context;
 
-pub(crate) fn render(ui: &mut UiRoot<'_>, _context: &mut Context, settings: &settings::Context) {
+pub(crate) fn render(
+    ui: &mut UiRoot<'_>,
+    _context: &mut Context,
+    settings: &settings::Context,
+    telemetry_position: Option<&router::Position>,
+) {
     let global_center = settings.global_center();
     let (latitude, longitude) = global_center.unwrap_or(FALLBACK_CENTER);
     let center = lon_lat(longitude, latitude);
@@ -34,6 +41,9 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, _context: &mut Context, settings: &set
     if let Some(route) = map_route {
         map = map.route(route);
     }
+    if let Some(icon) = telemetry_position.and_then(airplane_icon) {
+        map = map.icon(icon);
+    }
 
     ui.map_with_overlay(map, |overlay_ui, response, projector| {
         if let Some(corners) = &square {
@@ -53,6 +63,29 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, _context: &mut Context, settings: &set
                 ));
         }
     });
+}
+
+fn airplane_icon(position: &router::Position) -> Option<MapIcon> {
+    let latitude: f32 = position.coordinate.latitude.into();
+    let longitude: f32 = position.coordinate.longitude.into();
+    if !latitude.is_finite()
+        || !longitude.is_finite()
+        || !(-90.0..=90.0).contains(&latitude)
+        || !(-180.0..=180.0).contains(&longitude)
+    {
+        return None;
+    }
+
+    let heading: f32 = position.heading.into();
+    Some(
+        MapIcon::new(
+            SpanIcon::new(SvgIcon::AirplaneFill).egui_image(None),
+            lon_lat(f64::from(longitude), f64::from(latitude)),
+        )
+        .rotation(heading)
+        .size(28.0)
+        .tint(AIRPLANE_COLOR),
+    )
 }
 
 fn square_corners(latitude: f64, longitude: f64, diagonal_meters: f64) -> [Position; 4] {

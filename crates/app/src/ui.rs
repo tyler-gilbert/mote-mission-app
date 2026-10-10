@@ -124,7 +124,12 @@ pub(crate) fn render(
             ControlPanel::Connection => {
                 actions.extend(connection::render(ui, &mut context.connection, ui_state));
             }
-            ControlPanel::Mission => mission::render(ui, &mut context.mission, &context.settings),
+            ControlPanel::Mission => mission::render(
+                ui,
+                &mut context.mission,
+                &context.settings,
+                ui_state.snapshot.latest_telemetry.position.as_ref(),
+            ),
             ControlPanel::Telemetry => {
                 telemetry::render(ui, &mut context.telemetry, ui_state);
             }

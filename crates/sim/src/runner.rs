@@ -825,26 +825,42 @@ mod tests {
         assert_phase_two_fixture("rotated", ROTATED_JSON, ROTATED_DATA, 125, 10_966);
     }
 
+    /// Lidar samples along both legs of a 120-degree reference structure.
+    ///
+    /// `opening` is the robot-frame direction the walls open towards from the
+    /// vertex: away from the robot for the convex southwest structure, and
+    /// towards it for the concave northeast one.
+    fn synthetic_structure(
+        vertex: (f32, f32),
+        opening: f32,
+        leg: f32,
+    ) -> Vec<(units::PlaneAngle, units::Length)> {
+        const STEPS: u16 = 40;
+        let mut points = Vec::new();
+        for side in [-1.0_f32, 1.0_f32] {
+            let wall_angle = opening + side * core::f32::consts::FRAC_PI_3;
+            for step in 0..=STEPS {
+                let distance = leg * f32::from(step) / f32::from(STEPS);
+                let x = vertex.0 + distance * wall_angle.cos();
+                let y = vertex.1 + distance * wall_angle.sin();
+                points.push((
+                    units::PlaneAngle::new((-y.atan2(x)).rem_euclid(core::f32::consts::TAU)),
+                    units::Length::new(x.hypot(y)),
+                ));
+            }
+        }
+        points
+    }
+
+    fn structure_leg() -> f32 {
+        navigation::STRUCTURE_LEG.into()
+    }
+
     #[test]
     fn phase_three_detects_a_synthetic_convex_corner() {
         let vertex = (1.2_f32, 1.0_f32);
         let bisector = vertex.1.atan2(vertex.0);
-        let mut points = Vec::new();
-        for side in [-1.0_f32, 1.0_f32] {
-            for step in 0..32 {
-                let distance = 0.04 + step as f32 * 0.01;
-                let wall_angle = bisector + side * core::f32::consts::FRAC_PI_3;
-                let x = vertex.0 + distance * wall_angle.cos();
-                let y = vertex.1 + distance * wall_angle.sin();
-                let raw_angle = (-y.atan2(x)).rem_euclid(2.0 * core::f32::consts::PI);
-                let range = (x * x + y * y).sqrt();
-                points.push((units::PlaneAngle::new(raw_angle), units::Length::new(range)));
-            }
-        }
-        points.push((
-            units::PlaneAngle::new(-bisector),
-            units::Length::new(vertex.0.hypot(vertex.1)),
-        ));
+        let points = synthetic_structure(vertex, bisector, structure_leg());
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
 
         let corners = navigation::detect_corners(&revolution);
@@ -870,22 +886,7 @@ mod tests {
     #[test]
     fn phase_three_detects_a_corner_straddling_the_zero_degree_bin() {
         let vertex = (1.5_f32, 0.0_f32);
-        let bisector = 0.0_f32;
-        let mut points = Vec::new();
-        for side in [-1.0_f32, 1.0_f32] {
-            for step in 0..32 {
-                let distance = 0.04 + step as f32 * 0.01;
-                let wall_angle = bisector + side * core::f32::consts::FRAC_PI_3;
-                let x = vertex.0 + distance * wall_angle.cos();
-                let y = vertex.1 + distance * wall_angle.sin();
-                let raw_angle = (-y.atan2(x)).rem_euclid(2.0 * core::f32::consts::PI);
-                points.push((
-                    units::PlaneAngle::new(raw_angle),
-                    units::Length::new(x.hypot(y)),
-                ));
-            }
-        }
-        points.push((units::PlaneAngle::new(0.0), units::Length::new(vertex.0)));
+        let points = synthetic_structure(vertex, 0.0, structure_leg());
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
 
         let corners = navigation::detect_corners(&revolution);
@@ -903,25 +904,7 @@ mod tests {
     fn phase_three_detects_a_synthetic_concave_corner() {
         let vertex = (1.2_f32, 1.0_f32);
         let bisector = (-vertex.1).atan2(-vertex.0);
-        let mut points = Vec::new();
-        for side in [-1.0_f32, 1.0_f32] {
-            for step in 0..32 {
-                let distance = 0.04 + step as f32 * 0.01;
-                let wall_angle = bisector + side * core::f32::consts::FRAC_PI_3;
-                let x = vertex.0 + distance * wall_angle.cos();
-                let y = vertex.1 + distance * wall_angle.sin();
-                points.push((
-                    units::PlaneAngle::new((-y.atan2(x)).rem_euclid(2.0 * core::f32::consts::PI)),
-                    units::Length::new(x.hypot(y)),
-                ));
-            }
-        }
-        points.push((
-            units::PlaneAngle::new(
-                (-vertex.1.atan2(vertex.0)).rem_euclid(2.0 * core::f32::consts::PI),
-            ),
-            units::Length::new(vertex.0.hypot(vertex.1)),
-        ));
+        let points = synthetic_structure(vertex, bisector, structure_leg());
 
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
         let corners = navigation::detect_corners(&revolution);
@@ -935,6 +918,52 @@ mod tests {
         assert!((detected_x - vertex.0).abs() < 0.02, "x={detected_x}");
         assert!((detected_y - vertex.1).abs() < 0.02, "y={detected_y}");
         assert!((interior.to_degrees() - 120.0).abs() < 3.0);
+    }
+
+    #[test]
+    fn phase_three_detects_structures_at_their_narrowest_view() {
+        // From a corner adjacent to a structure, the line of sight is 45
+        // degrees off its bisector and the structure looks narrowest. One edge
+        // is then nearer the robot than the vertex.
+        let vertex = (0.6_f32, 0.0_f32);
+        for (kind, towards_robot) in [
+            (navigation::CornerKind::Southwest, 0.0),
+            (navigation::CornerKind::Northeast, core::f32::consts::PI),
+        ] {
+            for off_axis in [-core::f32::consts::FRAC_PI_4, core::f32::consts::FRAC_PI_4] {
+                let opening = towards_robot + off_axis;
+                let points = synthetic_structure(vertex, opening, structure_leg());
+                let revolution =
+                    navigation::Revolution::from_points(units::Time::new(1.0), &points);
+                let corners = navigation::detect_corners(&revolution);
+                assert_eq!(corners.len(), 1, "{kind:?} at {off_axis} rad off axis");
+                let observation = corners[0];
+                assert_eq!(observation.kind, kind, "{off_axis} rad off axis");
+                let detected_x: f32 = observation.vertex.0.into();
+                let detected_y: f32 = observation.vertex.1.into();
+                assert!(
+                    (detected_x - vertex.0).abs() < 0.02,
+                    "{kind:?} x={detected_x}"
+                );
+                assert!(
+                    (detected_y - vertex.1).abs() < 0.02,
+                    "{kind:?} y={detected_y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn phase_three_rejects_structures_of_the_wrong_width() {
+        let vertex = (0.6_f32, 0.0_f32);
+        for leg in [0.1_f32, 0.35_f32] {
+            let points = synthetic_structure(vertex, 0.0, leg);
+            let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
+            assert!(
+                navigation::detect_corners(&revolution).is_empty(),
+                "a structure with {leg} m legs should be rejected"
+            );
+        }
     }
 
     #[test]
