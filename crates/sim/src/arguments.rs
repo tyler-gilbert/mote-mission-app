@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use mote_api::messages::router;
 
 use crate::runner;
 
@@ -38,8 +37,13 @@ enum Harness {
         /// Test vector JSON of positions and expected guidance.
         vector: PathBuf,
     },
-    /// Invoke control without a guidance update.
-    Control,
+    /// Run a test vector of guidance inputs through control.
+    Control {
+        /// Settings JSON containing the reference frame (for example, san_martin_pattern.json).
+        settings: PathBuf,
+        /// Test vector JSON of guidance inputs and expected wheel speeds.
+        vector: PathBuf,
+    },
 }
 
 pub fn execute() -> anyhow::Result<()> {
@@ -52,13 +56,6 @@ pub fn execute() -> anyhow::Result<()> {
             runner::convert_telemetry_to_json(&input, output.as_deref())
         }
         Harness::Guidance { route, vector } => runner::guidance_vector(&route, &vector),
-        Harness::Control => {
-            let result = runner::control(router::Position::default().timestamp, None);
-            println!(
-                "Control harness completed; produced output: {}.",
-                result.is_some()
-            );
-            Ok(())
-        }
+        Harness::Control { settings, vector } => runner::control_vector(&settings, &vector),
     }
 }

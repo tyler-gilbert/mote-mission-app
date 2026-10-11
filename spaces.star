@@ -127,3 +127,18 @@ run_add_exec(
     deps = cargo_deps_new("sim", files = ["//san_martin_pattern.json"], has_fixtures = True),
     help = "Run the guidance test vector against the San Martin route through the sim crate",
 )
+
+run_add_exec(
+    "sim_control",
+    command = "cargo",
+    args = [
+        "run",
+        "--",
+        "control",
+        "../../../san_martin_pattern.json",
+        "fixtures/control_vector.json",
+    ],
+    working_directory = sim_working_directory,
+    deps = cargo_deps_new("sim", files = ["//san_martin_pattern.json"], has_fixtures = True),
+    help = "Run the control test vector in the San Martin reference frame through the sim crate",
+)

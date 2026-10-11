@@ -105,22 +105,26 @@ impl HarnessContext {
             let guidance =
                 self.guidance_context
                     .update(timestamp, position, route, &mut self.debug);
-            if let Some(guidance) = guidance {
+            if let Some(guidance) = guidance.as_ref() {
                 self.telemetry
                     .push(router::Message::Guidance(guidance.clone()));
                 self.guidance.push(guidance.clone());
+            }
 
-                if let Some(control) =
-                    self.control_context
-                        .update(timestamp, Some(guidance), &mut self.debug)
-                {
-                    self.telemetry
-                        .push(router::Message::Control(control.clone()));
-                    if self.control_mode == router::ControlMode::Auto {
-                        self.motor_commands.push(control.motor_drive.clone());
-                    }
-                    self.controls.push(control);
+            // Like the firmware, control also runs without guidance so it can
+            // stop the motors once the route is complete, and without a
+            // reference frame the default frame makes it command a stop.
+            let reference_frame = self.reference_frame.clone().unwrap_or_default();
+            if let Some(control) =
+                self.control_context
+                    .update(timestamp, guidance, &reference_frame, &mut self.debug)
+            {
+                self.telemetry
+                    .push(router::Message::Control(control.clone()));
+                if self.control_mode == router::ControlMode::Auto {
+                    self.motor_commands.push(control.motor_drive.clone());
                 }
+                self.controls.push(control);
             }
         }
     }
@@ -663,12 +667,226 @@ fn print_guidance_step(index: usize, step: &GuidanceStep, result: &GuidanceStepR
     }
 }
 
-/// Runs the control work context once with the supplied guidance, if available.
-pub fn control(
-    timestamp: units::Time,
-    guidance: Option<router::Guidance>,
-) -> Option<router::Control> {
-    control::Context::default().update(timestamp, guidance, &mut router::Status::default())
+/// A sequence of guidance inputs to run through control.
+#[derive(Deserialize)]
+struct ControlVector {
+    /// Allowed difference between computed and expected wheel speeds.
+    speed_tolerance_rad_per_s: f32,
+    /// Steps in the order they are run. One control context is used for the
+    /// whole vector, so any state carries over between steps.
+    steps: Vec<ControlStep>,
+}
+
+#[derive(Deserialize)]
+struct ControlStep {
+    name: String,
+    timestamp: f32,
+    /// When omitted, control runs without guidance, as it does once the route
+    /// is complete.
+    #[serde(default)]
+    guidance: Option<GuidanceInput>,
+    /// When omitted, control is computed and printed but not checked.
+    #[serde(default)]
+    expected: Option<ExpectedControl>,
+}
+
+/// Relative heading (compass convention, clockwise positive) and distance to
+/// the active waypoint, as produced by guidance.
+#[derive(Deserialize)]
+struct GuidanceInput {
+    heading_deg: f32,
+    distance_m: f32,
+}
+
+impl GuidanceInput {
+    fn to_guidance(&self, timestamp: units::Time) -> router::Guidance {
+        router::Guidance {
+            timestamp,
+            heading: units::PlaneAngle::new(self.heading_deg.to_radians()),
+            distance: units::Length::new(self.distance_m),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExpectedControl {
+    /// Commanded wheel speeds; positive drives the wheel forward.
+    MotorDrive {
+        left_rad_per_s: f32,
+        right_rad_per_s: f32,
+    },
+    /// Control produces nothing.
+    NoControl,
+}
+
+struct ControlStepResult {
+    control: Option<router::Control>,
+    /// `None` when the step has no expectation.
+    passed: Option<bool>,
+}
+
+/// Runs every step of a control test vector in the reference frame of a
+/// settings file and reports computed versus expected wheel speeds.
+///
+/// Guidance distances in the vector are global metres; the reference frame
+/// converts them into the local metres the wheels drive.
+///
+/// Fails if any checked step is outside the vector's tolerance.
+pub fn control_vector(settings_path: &Path, vector_path: &Path) -> Result<()> {
+    let settings_json = fs::read_to_string(settings_path)
+        .with_context(|| format!("could not read settings {}", settings_path.display()))?;
+    let reference_frame = parse_control_reference_frame(&settings_json).with_context(|| {
+        format!(
+            "could not decode reference frame {}",
+            settings_path.display()
+        )
+    })?;
+    let vector_json = fs::read_to_string(vector_path)
+        .with_context(|| format!("could not read test vector {}", vector_path.display()))?;
+    let vector = parse_control_vector(&vector_json)
+        .with_context(|| format!("could not decode test vector {}", vector_path.display()))?;
+
+    let results = replay_control(&reference_frame, &vector);
+    let local_per_global: f32 = navigation::diagonal_scale(&reference_frame).into();
+    for (index, (step, result)) in vector.steps.iter().zip(&results).enumerate() {
+        print_control_step(index, step, result, local_per_global);
+    }
+
+    let checked = results
+        .iter()
+        .filter(|result| result.passed.is_some())
+        .count();
+    let failed = results
+        .iter()
+        .filter(|result| result.passed == Some(false))
+        .count();
+    println!(
+        "Control summary: settings={} local_per_global={:.3e} vector={} steps={} checked={} passed={} failed={}",
+        settings_path.display(),
+        local_per_global,
+        vector_path.display(),
+        results.len(),
+        checked,
+        checked - failed,
+        failed,
+    );
+    if failed > 0 {
+        anyhow::bail!(
+            "{failed} of {checked} checked control steps were outside tolerance ({} rad/s)",
+            vector.speed_tolerance_rad_per_s,
+        );
+    }
+    Ok(())
+}
+
+/// The reference frame is read from a mission settings file, which also carries the route.
+fn parse_control_reference_frame(json: &str) -> Result<router::ReferenceFrame> {
+    let settings: router::Settings = serde_json::from_str(json)?;
+    let local_per_global: f32 = navigation::diagonal_scale(&settings.reference_frame).into();
+    if !(local_per_global > 0.0 && local_per_global.is_finite()) {
+        anyhow::bail!("reference frame diagonals must be positive");
+    }
+    Ok(settings.reference_frame)
+}
+
+fn parse_control_vector(json: &str) -> Result<ControlVector> {
+    let vector: ControlVector = serde_json::from_str(json)?;
+    if vector.steps.is_empty() {
+        anyhow::bail!("test vector has no steps");
+    }
+    Ok(vector)
+}
+
+fn replay_control(
+    reference_frame: &router::ReferenceFrame,
+    vector: &ControlVector,
+) -> Vec<ControlStepResult> {
+    let mut context = control::Context::default();
+    let mut debug = router::Status::default();
+    vector
+        .steps
+        .iter()
+        .map(|step| {
+            let timestamp = units::Time::new(step.timestamp);
+            let guidance = step
+                .guidance
+                .as_ref()
+                .map(|guidance| guidance.to_guidance(timestamp));
+            let control = context.update(timestamp, guidance, reference_frame, &mut debug);
+            let passed = step.expected.as_ref().map(|expected| {
+                control_matches(expected, control.as_ref(), vector.speed_tolerance_rad_per_s)
+            });
+            ControlStepResult { control, passed }
+        })
+        .collect()
+}
+
+fn control_matches(
+    expected: &ExpectedControl,
+    control: Option<&router::Control>,
+    tolerance_rad_per_s: f32,
+) -> bool {
+    match (expected, control) {
+        (ExpectedControl::NoControl, control) => control.is_none(),
+        (ExpectedControl::MotorDrive { .. }, None) => false,
+        (
+            ExpectedControl::MotorDrive {
+                left_rad_per_s,
+                right_rad_per_s,
+            },
+            Some(control),
+        ) => {
+            let (left, right) = wheel_speeds(&control.motor_drive);
+            (left - left_rad_per_s).abs() <= tolerance_rad_per_s
+                && (right - right_rad_per_s).abs() <= tolerance_rad_per_s
+        }
+    }
+}
+
+fn wheel_speeds(motor_drive: &router::MotorDrive) -> (f32, f32) {
+    (motor_drive.left.into(), motor_drive.right.into())
+}
+
+fn print_control_step(
+    index: usize,
+    step: &ControlStep,
+    result: &ControlStepResult,
+    local_per_global: f32,
+) {
+    let input = match &step.guidance {
+        Some(guidance) => format!(
+            "heading={:+8.2}deg distance={:7.1}m (local {:6.2}cm)",
+            guidance.heading_deg,
+            guidance.distance_m,
+            guidance.distance_m * local_per_global * 100.0,
+        ),
+        None => format!("{:<48}", "no guidance"),
+    };
+    let computed = match &result.control {
+        Some(control) => {
+            let (left, right) = wheel_speeds(&control.motor_drive);
+            format!("left={left:+6.3} right={right:+6.3}rad/s")
+        }
+        None => "no control".to_owned(),
+    };
+    let expected = match &step.expected {
+        Some(ExpectedControl::MotorDrive {
+            left_rad_per_s,
+            right_rad_per_s,
+        }) => format!("expected left={left_rad_per_s:+6.3} right={right_rad_per_s:+6.3}rad/s"),
+        Some(ExpectedControl::NoControl) => "expected no control".to_owned(),
+        None => "no expectation".to_owned(),
+    };
+    let verdict = match result.passed {
+        Some(true) => "PASS",
+        Some(false) => "FAIL",
+        None => "----",
+    };
+    println!(
+        "[{verdict}] step {index:>2} t={:6.1}s {input} -> {computed} | {expected} | {}",
+        step.timestamp, step.name
+    );
 }
 
 fn read_telemetry_messages(path: &Path) -> Result<Vec<router::Message>> {
@@ -1767,5 +1985,108 @@ mod tests {
         assert_eq!(results[1].passed, Some(false));
         assert_eq!(results[2].passed, None);
         assert!(results[2].guidance.is_some());
+    }
+
+    const CONTROL_VECTOR: &str = include_str!("../fixtures/control_vector.json");
+
+    fn san_martin_frame() -> router::ReferenceFrame {
+        parse_control_reference_frame(SAN_MARTIN_ROUTE).expect("reference frame should decode")
+    }
+
+    #[test]
+    fn control_reference_frame_requires_positive_diagonals() {
+        let mut settings: serde_json::Value =
+            serde_json::from_str(SAN_MARTIN_ROUTE).expect("settings should decode");
+        settings["reference_frame"]["local_diagonal"] = serde_json::json!(0.0);
+        assert!(parse_control_reference_frame(&settings.to_string()).is_err());
+    }
+
+    #[test]
+    fn control_vector_fixture_passes() {
+        let vector = parse_control_vector(CONTROL_VECTOR).expect("vector should decode");
+        let results = replay_control(&san_martin_frame(), &vector);
+
+        for (step, result) in vector.steps.iter().zip(&results) {
+            assert_eq!(result.passed, Some(true), "step '{}' failed", step.name);
+            let control = result
+                .control
+                .as_ref()
+                .expect("control always produces a command");
+            let timestamp: f32 = control.timestamp.into();
+            assert_eq!(timestamp, step.timestamp, "step '{}'", step.name);
+        }
+    }
+
+    #[test]
+    fn control_vector_reports_out_of_tolerance_and_unchecked_steps() {
+        let mut vector = parse_control_vector(CONTROL_VECTOR).expect("vector should decode");
+        vector.steps.truncate(3);
+        if let Some(ExpectedControl::MotorDrive { left_rad_per_s, .. }) =
+            &mut vector.steps[0].expected
+        {
+            *left_rad_per_s += 0.5;
+        }
+        vector.steps[1].expected = Some(ExpectedControl::NoControl);
+        vector.steps[2].expected = None;
+
+        let results = replay_control(&san_martin_frame(), &vector);
+        assert_eq!(results[0].passed, Some(false));
+        assert_eq!(results[1].passed, Some(false));
+        assert_eq!(results[2].passed, None);
+        assert!(results[2].control.is_some());
+    }
+
+    #[test]
+    fn pipeline_steers_toward_san_martin_guidance_and_stops_at_route_end() {
+        let route = parse_guidance_route(SAN_MARTIN_ROUTE).expect("route should decode");
+        let vector = parse_guidance_vector(SAN_MARTIN_GUIDANCE).expect("vector should decode");
+        let mut context = HarnessContext {
+            route: Some(route),
+            reference_frame: Some(san_martin_frame()),
+            control_mode: router::ControlMode::Auto,
+            ..HarnessContext::default()
+        };
+        let max_wheel: f32 = control::MAX_WHEEL_SPEED.into();
+
+        for step in &vector.steps {
+            let guidance_count = context.guidance.len();
+            context.handle_position(Some(step.position.clone()), step.position.timestamp);
+
+            assert_eq!(context.motor_commands.len(), context.controls.len());
+            let (left, right) = wheel_speeds(
+                context
+                    .motor_commands
+                    .last()
+                    .expect("every update with a route and position commands the motors"),
+            );
+            assert!(
+                left.abs() <= max_wheel + 1e-5 && right.abs() <= max_wheel + 1e-5,
+                "step '{}' exceeds the wheel limit: left={left} right={right}",
+                step.name
+            );
+
+            match context.guidance.get(guidance_count) {
+                Some(guidance) => {
+                    let heading: f32 = guidance.heading.into();
+                    if heading.abs() < 1e-3 {
+                        assert!((left - right).abs() < 1e-2, "step '{}'", step.name);
+                    } else {
+                        assert_eq!(
+                            left > right,
+                            heading > 0.0,
+                            "step '{}' turns the wrong way: heading={heading} left={left} right={right}",
+                            step.name
+                        );
+                    }
+                    if heading.abs() < core::f32::consts::FRAC_PI_2 {
+                        assert!(left + right > 0.0, "step '{}'", step.name);
+                    }
+                }
+                None => assert_eq!((left, right), (0.0, 0.0), "step '{}'", step.name),
+            }
+        }
+
+        assert_eq!(context.controls.len(), vector.steps.len());
+        assert!(context.guidance.len() < vector.steps.len());
     }
 }
