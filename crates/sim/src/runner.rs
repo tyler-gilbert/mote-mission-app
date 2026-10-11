@@ -9,7 +9,10 @@ use mote_api::{
     messages::router,
     work::{control, guidance, navigation},
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+/// Side-wall length of the reference structures in the canonical LiDAR recordings.
+const CANONICAL_STRUCTURE_SIDE_WALL_LENGTH: units::Length = units::Length::new(0.2032);
 
 #[derive(Default)]
 struct HarnessContext {
@@ -17,7 +20,7 @@ struct HarnessContext {
     control_context: control::Context,
     navigation_context: navigation::Context,
     route: Option<router::Route>,
-    control_mode_enabled: bool,
+    control_mode: router::ControlMode,
     position: Option<router::Position>,
     reference_frame: Option<router::ReferenceFrame>,
     telemetry_selection: router::TelemetrySelection,
@@ -113,7 +116,7 @@ impl HarnessContext {
                 {
                     self.telemetry
                         .push(router::Message::Control(control.clone()));
-                    if self.control_mode_enabled {
+                    if self.control_mode == router::ControlMode::Auto {
                         self.motor_commands.push(control.motor_drive.clone());
                     }
                     self.controls.push(control);
@@ -125,7 +128,7 @@ impl HarnessContext {
 
 enum SensorEvent {
     Imu(router::Imu),
-    LidarScan(router::Scan),
+    LidarScan(Box<router::Scan>),
 }
 
 impl SensorEvent {
@@ -251,7 +254,7 @@ fn replay_navigation(input_path: &Path) -> Result<(NavigationInput, HarnessConte
             }
             SensorEvent::LidarScan(scan) => {
                 let timestamp = scan.timestamp;
-                context.handle_lidar_scan(timestamp, scan);
+                context.handle_lidar_scan(timestamp, *scan);
             }
         }
     }
@@ -369,6 +372,7 @@ fn canonical_reference_frame() -> router::ReferenceFrame {
         },
         global_diagonal: units::Length::new(78.0 * 111_319.5 * core::f32::consts::SQRT_2),
         local_diagonal: units::Length::new(78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2),
+        structure_side_wall_length: CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
     }
 }
 
@@ -401,7 +405,10 @@ fn read_navigation_input(path: &Path) -> Result<NavigationInput> {
     }) {
         let point_count = scans.iter().map(|scan| scan.point_cloud.len()).sum();
         let scan_count = scans.len();
-        let events = scans.into_iter().map(SensorEvent::LidarScan).collect();
+        let events = scans
+            .into_iter()
+            .map(|scan| SensorEvent::LidarScan(Box::new(scan)))
+            .collect();
         return Ok(NavigationInput {
             format: InputFormat::Binary,
             events,
@@ -423,7 +430,7 @@ fn read_navigation_input(path: &Path) -> Result<NavigationInput> {
             router::Message::LidarScan(scan) => {
                 scan_count += 1;
                 point_count += scan.point_cloud.len();
-                events.push(SensorEvent::LidarScan(scan));
+                events.push(SensorEvent::LidarScan(Box::new(scan)));
             }
             router::Message::Imu(imu) => events.push(SensorEvent::Imu(imu)),
             _ => {}
@@ -472,13 +479,188 @@ pub fn convert_telemetry_to_json(input_path: &Path, output_path: Option<&Path>) 
     Ok(())
 }
 
-/// Runs the guidance work context once with the supplied route and position.
-pub fn guidance(
-    timestamp: units::Time,
-    position: &router::Position,
-    route: &router::Route,
-) -> Option<router::Guidance> {
-    guidance::Context::default().update(timestamp, position, route, &mut router::Status::default())
+/// A sequence of known positions to run through guidance against a route.
+#[derive(Deserialize)]
+struct GuidanceVector {
+    /// Allowed angular difference between computed and expected relative heading.
+    heading_tolerance_deg: f32,
+    /// Allowed difference between computed and expected distance to the target.
+    distance_tolerance_m: f32,
+    /// Positions in the order the robot visits them. Guidance state carries
+    /// over between steps, so waypoints reached earlier stay reached.
+    steps: Vec<GuidanceStep>,
+}
+
+#[derive(Deserialize)]
+struct GuidanceStep {
+    name: String,
+    position: router::Position,
+    /// When omitted, guidance is computed and printed but not checked.
+    #[serde(default)]
+    expected: Option<ExpectedGuidance>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExpectedGuidance {
+    /// Relative heading (compass convention, clockwise positive) and distance
+    /// to the active waypoint.
+    Guidance { heading_deg: f32, distance_m: f32 },
+    /// Guidance produces nothing, for example once the route is complete.
+    NoGuidance,
+}
+
+struct GuidanceStepResult {
+    guidance: Option<router::Guidance>,
+    /// Guidance log written during this step, such as a waypoint being reached.
+    log: Option<String>,
+    /// `None` when the step has no expectation.
+    passed: Option<bool>,
+}
+
+/// Runs every position of a guidance test vector against the route in a
+/// settings file and reports computed versus expected guidance.
+///
+/// Fails if any checked step is outside the vector's tolerances.
+pub fn guidance_vector(route_path: &Path, vector_path: &Path) -> Result<()> {
+    let settings_json = fs::read_to_string(route_path)
+        .with_context(|| format!("could not read route {}", route_path.display()))?;
+    let route = parse_guidance_route(&settings_json)
+        .with_context(|| format!("could not decode route {}", route_path.display()))?;
+    let vector_json = fs::read_to_string(vector_path)
+        .with_context(|| format!("could not read test vector {}", vector_path.display()))?;
+    let vector = parse_guidance_vector(&vector_json)
+        .with_context(|| format!("could not decode test vector {}", vector_path.display()))?;
+
+    let results = replay_guidance(&route, &vector);
+    for (index, (step, result)) in vector.steps.iter().zip(&results).enumerate() {
+        print_guidance_step(index, step, result);
+    }
+
+    let checked = results
+        .iter()
+        .filter(|result| result.passed.is_some())
+        .count();
+    let failed = results
+        .iter()
+        .filter(|result| result.passed == Some(false))
+        .count();
+    println!(
+        "Guidance summary: route={} waypoints={} vector={} steps={} checked={} passed={} failed={}",
+        route_path.display(),
+        route.len(),
+        vector_path.display(),
+        results.len(),
+        checked,
+        checked - failed,
+        failed,
+    );
+    if failed > 0 {
+        anyhow::bail!(
+            "{failed} of {checked} checked guidance steps were outside tolerance (heading {} deg, distance {} m)",
+            vector.heading_tolerance_deg,
+            vector.distance_tolerance_m,
+        );
+    }
+    Ok(())
+}
+
+/// Routes are read from mission settings files, which also carry the reference frame.
+fn parse_guidance_route(json: &str) -> Result<router::Route> {
+    let settings: router::Settings = serde_json::from_str(json)?;
+    if settings.route.is_empty() {
+        anyhow::bail!("route has no waypoints");
+    }
+    Ok(settings.route)
+}
+
+fn parse_guidance_vector(json: &str) -> Result<GuidanceVector> {
+    let vector: GuidanceVector = serde_json::from_str(json)?;
+    if vector.steps.is_empty() {
+        anyhow::bail!("test vector has no steps");
+    }
+    Ok(vector)
+}
+
+fn replay_guidance(route: &router::Route, vector: &GuidanceVector) -> Vec<GuidanceStepResult> {
+    let mut context = guidance::Context::default();
+    let mut debug = router::Status::default();
+    vector
+        .steps
+        .iter()
+        .map(|step| {
+            debug.log.clear();
+            let guidance =
+                context.update(step.position.timestamp, &step.position, route, &mut debug);
+            let passed = step
+                .expected
+                .as_ref()
+                .map(|expected| guidance_matches(expected, guidance.as_ref(), vector));
+            GuidanceStepResult {
+                guidance,
+                log: (!debug.log.is_empty()).then(|| debug.log.to_string()),
+                passed,
+            }
+        })
+        .collect()
+}
+
+fn guidance_matches(
+    expected: &ExpectedGuidance,
+    guidance: Option<&router::Guidance>,
+    vector: &GuidanceVector,
+) -> bool {
+    match (expected, guidance) {
+        (ExpectedGuidance::NoGuidance, guidance) => guidance.is_none(),
+        (ExpectedGuidance::Guidance { .. }, None) => false,
+        (
+            ExpectedGuidance::Guidance {
+                heading_deg,
+                distance_m,
+            },
+            Some(guidance),
+        ) => {
+            let (heading, distance) = guidance_degrees_metres(guidance);
+            angular_error_degrees(heading, *heading_deg) <= vector.heading_tolerance_deg
+                && (distance - distance_m).abs() <= vector.distance_tolerance_m
+        }
+    }
+}
+
+fn guidance_degrees_metres(guidance: &router::Guidance) -> (f32, f32) {
+    let heading: f32 = guidance.heading.into();
+    (heading.to_degrees(), guidance.distance.into())
+}
+
+fn print_guidance_step(index: usize, step: &GuidanceStep, result: &GuidanceStepResult) {
+    let timestamp: f32 = step.position.timestamp.into();
+    let computed = match &result.guidance {
+        Some(guidance) => {
+            let (heading, distance) = guidance_degrees_metres(guidance);
+            format!("heading={heading:+8.2}deg distance={distance:8.1}m")
+        }
+        None => "no guidance".to_owned(),
+    };
+    let expected = match &step.expected {
+        Some(ExpectedGuidance::Guidance {
+            heading_deg,
+            distance_m,
+        }) => format!("expected heading={heading_deg:+8.2}deg distance={distance_m:8.1}m"),
+        Some(ExpectedGuidance::NoGuidance) => "expected no guidance".to_owned(),
+        None => "no expectation".to_owned(),
+    };
+    let verdict = match result.passed {
+        Some(true) => "PASS",
+        Some(false) => "FAIL",
+        None => "----",
+    };
+    println!(
+        "[{verdict}] step {index:>2} t={timestamp:6.1}s {computed} | {expected} | {}",
+        step.name
+    );
+    if let Some(log) = &result.log {
+        println!("       {log}");
+    }
 }
 
 /// Runs the control work context once with the supplied guidance, if available.
@@ -642,6 +824,7 @@ mod tests {
             },
             global_diagonal: units::Length::new(9.0 * 111_319.5 * core::f32::consts::SQRT_2),
             local_diagonal: units::Length::new(9.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2),
+            structure_side_wall_length: CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
         };
         let coordinate = router::Coordinate {
             latitude: units::imperial::Degrees::new(1.25),
@@ -727,9 +910,12 @@ mod tests {
         .expect("canonical binary telemetry should decode")
     }
 
+    /// Robot-frame `(x, y, range, bin)` points of one replayed revolution.
+    type ReplayedRevolution = Vec<(f32, f32, f32, usize)>;
+
     fn replay_revolutions(
         scans: &[router::Scan],
-    ) -> (navigation::Context, Vec<Vec<(f32, f32, f32, usize)>>) {
+    ) -> (navigation::Context, Vec<ReplayedRevolution>) {
         let mut context = navigation::Context::default();
         let frame = router::ReferenceFrame::default();
         let mut revolutions = Vec::new();
@@ -866,7 +1052,7 @@ mod tests {
     }
 
     fn structure_leg() -> f32 {
-        navigation::STRUCTURE_LEG.into()
+        CANONICAL_STRUCTURE_SIDE_WALL_LENGTH.into()
     }
 
     #[test]
@@ -876,7 +1062,7 @@ mod tests {
         let points = synthetic_structure(vertex, bisector, structure_leg());
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
 
-        let corners = navigation::detect_corners(&revolution);
+        let corners = navigation::detect_corners(&revolution, CANONICAL_STRUCTURE_SIDE_WALL_LENGTH);
         let observation = corners
             .iter()
             .find(|corner| corner.kind == navigation::CornerKind::Southwest)
@@ -902,7 +1088,7 @@ mod tests {
         let points = synthetic_structure(vertex, 0.0, structure_leg());
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
 
-        let corners = navigation::detect_corners(&revolution);
+        let corners = navigation::detect_corners(&revolution, CANONICAL_STRUCTURE_SIDE_WALL_LENGTH);
         let observation = corners
             .iter()
             .find(|corner| corner.kind == navigation::CornerKind::Southwest)
@@ -920,7 +1106,7 @@ mod tests {
         let points = synthetic_structure(vertex, bisector, structure_leg());
 
         let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
-        let corners = navigation::detect_corners(&revolution);
+        let corners = navigation::detect_corners(&revolution, CANONICAL_STRUCTURE_SIDE_WALL_LENGTH);
         let observation = corners
             .iter()
             .find(|corner| corner.kind == navigation::CornerKind::Northeast)
@@ -948,7 +1134,8 @@ mod tests {
                 let points = synthetic_structure(vertex, opening, structure_leg());
                 let revolution =
                     navigation::Revolution::from_points(units::Time::new(1.0), &points);
-                let corners = navigation::detect_corners(&revolution);
+                let corners =
+                    navigation::detect_corners(&revolution, CANONICAL_STRUCTURE_SIDE_WALL_LENGTH);
                 assert_eq!(corners.len(), 1, "{kind:?} at {off_axis} rad off axis");
                 let observation = corners[0];
                 assert_eq!(observation.kind, kind, "{off_axis} rad off axis");
@@ -973,7 +1160,8 @@ mod tests {
             let points = synthetic_structure(vertex, 0.0, leg);
             let revolution = navigation::Revolution::from_points(units::Time::new(1.0), &points);
             assert!(
-                navigation::detect_corners(&revolution).is_empty(),
+                navigation::detect_corners(&revolution, CANONICAL_STRUCTURE_SIDE_WALL_LENGTH)
+                    .is_empty(),
                 "a structure with {leg} m legs should be rejected"
             );
         }
@@ -997,7 +1185,10 @@ mod tests {
                 );
                 while let Some(revolution) = context.take_completed_revolution() {
                     println!("{name}: revolution bins={}", revolution.points().count());
-                    let corners = navigation::detect_corners(&revolution);
+                    let corners = navigation::detect_corners(
+                        &revolution,
+                        CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
+                    );
                     observations += corners.len();
                     for corner in corners {
                         let vertex: (f32, f32) = (corner.vertex.0.into(), corner.vertex.1.into());
@@ -1029,6 +1220,7 @@ mod tests {
             },
             global_diagonal: units::Length::new(111_319.5 * core::f32::consts::SQRT_2),
             local_diagonal: units::Length::new(core::f32::consts::SQRT_2),
+            structure_side_wall_length: CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
         }
     }
 
@@ -1154,6 +1346,7 @@ mod tests {
             local_diagonal: units::Length::new(
                 78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2,
             ),
+            structure_side_wall_length: CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
         };
         let midpoint = navigation::to_local(&frame, &frame.global_center);
         let midpoint_east: f32 = midpoint.east.into();
@@ -1175,7 +1368,8 @@ mod tests {
                     &mut router::Status::default(),
                 );
                 while let Some(revolution) = context.take_completed_revolution() {
-                    let corners = navigation::detect_corners(&revolution);
+                    let corners =
+                        navigation::detect_corners(&revolution, frame.structure_side_wall_length);
                     if let Some(pose) = navigation::fix_from_corners(&frame, &corners, None) {
                         fixes.push(pose);
                     }
@@ -1239,6 +1433,7 @@ mod tests {
             local_diagonal: units::Length::new(
                 78.0 * 111_319.5 / 1.0e7 * core::f32::consts::SQRT_2,
             ),
+            structure_side_wall_length: CANONICAL_STRUCTURE_SIDE_WALL_LENGTH,
         };
         let mut final_headings = Vec::new();
         for (name, json, data) in [
@@ -1528,5 +1723,49 @@ mod tests {
         );
         assert!(context.current_revolution().is_none());
         assert_eq!(context.revolution_wraps(), 0);
+    }
+
+    const SAN_MARTIN_ROUTE: &str = include_str!("../../../../san_martin_pattern.json");
+    const SAN_MARTIN_GUIDANCE: &str = include_str!("../fixtures/san_martin_guidance.json");
+
+    #[test]
+    fn guidance_vector_matches_the_san_martin_route() {
+        let route = parse_guidance_route(SAN_MARTIN_ROUTE).expect("route should decode");
+        let vector = parse_guidance_vector(SAN_MARTIN_GUIDANCE).expect("vector should decode");
+        let results = replay_guidance(&route, &vector);
+
+        for (step, result) in vector.steps.iter().zip(&results) {
+            assert_eq!(result.passed, Some(true), "step '{}' failed", step.name);
+        }
+        let last = results.last().expect("vector has steps");
+        assert!(last.guidance.is_none());
+        let completion = results
+            .iter()
+            .filter_map(|result| result.log.as_deref())
+            .next_back()
+            .expect("guidance should log waypoint progress");
+        assert_eq!(
+            completion,
+            format!("Guidance: route complete ({} waypoints)", route.len())
+        );
+    }
+
+    #[test]
+    fn guidance_vector_reports_out_of_tolerance_and_unchecked_steps() {
+        let route = parse_guidance_route(SAN_MARTIN_ROUTE).expect("route should decode");
+        let mut vector = parse_guidance_vector(SAN_MARTIN_GUIDANCE).expect("vector should decode");
+        vector.steps.truncate(3);
+        if let Some(ExpectedGuidance::Guidance { heading_deg, .. }) = &mut vector.steps[0].expected
+        {
+            *heading_deg += 5.0;
+        }
+        vector.steps[1].expected = Some(ExpectedGuidance::NoGuidance);
+        vector.steps[2].expected = None;
+
+        let results = replay_guidance(&route, &vector);
+        assert_eq!(results[0].passed, Some(false));
+        assert_eq!(results[1].passed, Some(false));
+        assert_eq!(results[2].passed, None);
+        assert!(results[2].guidance.is_some());
     }
 }

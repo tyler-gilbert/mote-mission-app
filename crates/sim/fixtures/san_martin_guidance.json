@@ -1,0 +1,660 @@
+{
+  "description": "Walks the San Martin pattern route: approach and capture of the start waypoint, cross-track and heading errors, a wide overshoot, every remaining leg at 60% with alternating offsets, then route completion.",
+  "heading_tolerance_deg": 1.0,
+  "distance_tolerance_m": 2.0,
+  "steps": [
+    {
+      "name": "Before start, on course for waypoint 0",
+      "position": {
+        "timestamp": 0.0,
+        "coordinate": {
+          "latitude": 37.0804212,
+          "longitude": -121.60404667
+        },
+        "heading": 150.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.0,
+          "distance_m": 150.0
+        }
+      }
+    },
+    {
+      "name": "Closing on start, left of course and turned right",
+      "position": {
+        "timestamp": 5.0,
+        "coordinate": {
+          "latitude": 37.08000307,
+          "longitude": -121.60368987
+        },
+        "heading": 165.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -7.41,
+          "distance_m": 90.8
+        }
+      }
+    },
+    {
+      "name": "Inside the start capture radius",
+      "position": {
+        "timestamp": 10.0,
+        "coordinate": {
+          "latitude": 37.07941878,
+          "longitude": -121.60353867
+        },
+        "heading": 150.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -0.72,
+          "distance_m": 396.7
+        }
+      }
+    },
+    {
+      "name": "Leg 1 midpoint, right of track",
+      "position": {
+        "timestamp": 15.0,
+        "coordinate": {
+          "latitude": 37.07770582,
+          "longitude": -121.602737
+        },
+        "heading": 150.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -6.12,
+          "distance_m": 187.7
+        }
+      }
+    },
+    {
+      "name": "Leg 1, left of track, heading 20 degrees right",
+      "position": {
+        "timestamp": 20.0,
+        "coordinate": {
+          "latitude": 37.07734917,
+          "longitude": -121.60217789
+        },
+        "heading": 170.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -12.97,
+          "distance_m": 122.6
+        }
+      }
+    },
+    {
+      "name": "Inside the waypoint 1 capture radius",
+      "position": {
+        "timestamp": 25.0,
+        "coordinate": {
+          "latitude": 37.07678749,
+          "longitude": -121.60205989
+        },
+        "heading": 150.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -0.53,
+          "distance_m": 432.3
+        }
+      }
+    },
+    {
+      "name": "Leg 2, facing back toward waypoint 1",
+      "position": {
+        "timestamp": 30.0,
+        "coordinate": {
+          "latitude": 37.0751527,
+          "longitude": -121.60110639
+        },
+        "heading": 320.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -170.0,
+          "distance_m": 221.6
+        }
+      }
+    },
+    {
+      "name": "Overshot waypoint 2 wide on the right",
+      "position": {
+        "timestamp": 35.0,
+        "coordinate": {
+          "latitude": 37.0728149,
+          "longitude": -121.60093331
+        },
+        "heading": 150.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -17.14,
+          "distance_m": 373.2
+        }
+      }
+    },
+    {
+      "name": "Leg 4 at 60%, right of track",
+      "position": {
+        "timestamp": 40.0,
+        "coordinate": {
+          "latitude": 37.06871475,
+          "longitude": -121.59759575
+        },
+        "heading": 145.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 5 at 60%, left of track",
+      "position": {
+        "timestamp": 45.0,
+        "coordinate": {
+          "latitude": 37.06660859,
+          "longitude": -121.59600989
+        },
+        "heading": 146.33
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -0.28,
+          "distance_m": 97.3
+        }
+      }
+    },
+    {
+      "name": "Leg 6 at 60%, right of track",
+      "position": {
+        "timestamp": 50.0,
+        "coordinate": {
+          "latitude": 37.06508085,
+          "longitude": -121.59440545
+        },
+        "heading": 117.73
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.51,
+          "distance_m": 102.2
+        }
+      }
+    },
+    {
+      "name": "Leg 7 at 60%, left of track",
+      "position": {
+        "timestamp": 55.0,
+        "coordinate": {
+          "latitude": 37.06450095,
+          "longitude": -121.59198402
+        },
+        "heading": 102.7
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.19,
+          "distance_m": 120.3
+        }
+      }
+    },
+    {
+      "name": "Leg 8 at 60%, right of track",
+      "position": {
+        "timestamp": 60.0,
+        "coordinate": {
+          "latitude": 37.06456239,
+          "longitude": -121.58904785
+        },
+        "heading": 74.43
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.75,
+          "distance_m": 141.0
+        }
+      }
+    },
+    {
+      "name": "Leg 9 at 60%, left of track",
+      "position": {
+        "timestamp": 65.0,
+        "coordinate": {
+          "latitude": 37.06580016,
+          "longitude": -121.58628194
+        },
+        "heading": 65.96
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.57,
+          "distance_m": 133.6
+        }
+      }
+    },
+    {
+      "name": "Leg 10 at 60%, right of track",
+      "position": {
+        "timestamp": 70.0,
+        "coordinate": {
+          "latitude": 37.06741548,
+          "longitude": -121.58413757
+        },
+        "heading": 36.39
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.96,
+          "distance_m": 113.4
+        }
+      }
+    },
+    {
+      "name": "Leg 11 at 60%, left of track",
+      "position": {
+        "timestamp": 75.0,
+        "coordinate": {
+          "latitude": 37.06949659,
+          "longitude": -121.5833019
+        },
+        "heading": 17.91
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -0.21,
+          "distance_m": 95.9
+        }
+      }
+    },
+    {
+      "name": "Leg 12 at 60%, right of track",
+      "position": {
+        "timestamp": 80.0,
+        "coordinate": {
+          "latitude": 37.07150706,
+          "longitude": -121.5833762
+        },
+        "heading": 335.9
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.01,
+          "distance_m": 92.0
+        }
+      }
+    },
+    {
+      "name": "Leg 13 at 60%, left of track",
+      "position": {
+        "timestamp": 85.0,
+        "coordinate": {
+          "latitude": 37.07397526,
+          "longitude": -121.58475235
+        },
+        "heading": 335.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 14 at 60%, right of track",
+      "position": {
+        "timestamp": 90.0,
+        "coordinate": {
+          "latitude": 37.07696052,
+          "longitude": -121.58625378
+        },
+        "heading": 325.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 15 at 60%, left of track",
+      "position": {
+        "timestamp": 95.0,
+        "coordinate": {
+          "latitude": 37.07980571,
+          "longitude": -121.58800623
+        },
+        "heading": 335.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 16 at 60%, right of track",
+      "position": {
+        "timestamp": 100.0,
+        "coordinate": {
+          "latitude": 37.08279097,
+          "longitude": -121.58950767
+        },
+        "heading": 325.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 17 at 60%, left of track",
+      "position": {
+        "timestamp": 105.0,
+        "coordinate": {
+          "latitude": 37.08563615,
+          "longitude": -121.59126012
+        },
+        "heading": 335.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 18 at 60%, right of track",
+      "position": {
+        "timestamp": 110.0,
+        "coordinate": {
+          "latitude": 37.08862141,
+          "longitude": -121.59276156
+        },
+        "heading": 325.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 19 at 60%, left of track",
+      "position": {
+        "timestamp": 115.0,
+        "coordinate": {
+          "latitude": 37.09146659,
+          "longitude": -121.59451401
+        },
+        "heading": 335.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 20 at 60%, right of track",
+      "position": {
+        "timestamp": 120.0,
+        "coordinate": {
+          "latitude": 37.09445185,
+          "longitude": -121.59601545
+        },
+        "heading": 325.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 21 at 60%, left of track",
+      "position": {
+        "timestamp": 125.0,
+        "coordinate": {
+          "latitude": 37.09655801,
+          "longitude": -121.59760131
+        },
+        "heading": 326.33
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -0.28,
+          "distance_m": 97.3
+        }
+      }
+    },
+    {
+      "name": "Leg 22 at 60%, right of track",
+      "position": {
+        "timestamp": 130.0,
+        "coordinate": {
+          "latitude": 37.09801658,
+          "longitude": -121.59941902
+        },
+        "heading": 291.18
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.94,
+          "distance_m": 112.9
+        }
+      }
+    },
+    {
+      "name": "Leg 23 at 60%, left of track",
+      "position": {
+        "timestamp": 135.0,
+        "coordinate": {
+          "latitude": 37.0984945,
+          "longitude": -121.60210541
+        },
+        "heading": 280.51
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.47,
+          "distance_m": 130.0
+        }
+      }
+    },
+    {
+      "name": "Leg 24 at 60%, right of track",
+      "position": {
+        "timestamp": 140.0,
+        "coordinate": {
+          "latitude": 37.09840084,
+          "longitude": -121.60513591
+        },
+        "heading": 254.43
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.75,
+          "distance_m": 141.0
+        }
+      }
+    },
+    {
+      "name": "Leg 25 at 60%, left of track",
+      "position": {
+        "timestamp": 145.0,
+        "coordinate": {
+          "latitude": 37.09716307,
+          "longitude": -121.60790182
+        },
+        "heading": 245.96
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.57,
+          "distance_m": 133.6
+        }
+      }
+    },
+    {
+      "name": "Leg 26 at 60%, right of track",
+      "position": {
+        "timestamp": 150.0,
+        "coordinate": {
+          "latitude": 37.09559377,
+          "longitude": -121.60991111
+        },
+        "heading": 213.48
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.59,
+          "distance_m": 104.1
+        }
+      }
+    },
+    {
+      "name": "Leg 27 at 60%, left of track",
+      "position": {
+        "timestamp": 155.0,
+        "coordinate": {
+          "latitude": 37.09363231,
+          "longitude": -121.61044507
+        },
+        "heading": 188.94
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.2,
+          "distance_m": 88.3
+        }
+      }
+    },
+    {
+      "name": "Leg 28 at 60%, right of track",
+      "position": {
+        "timestamp": 160.0,
+        "coordinate": {
+          "latitude": 37.09165954,
+          "longitude": -121.610235
+        },
+        "heading": 155.9
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 0.01,
+          "distance_m": 92.0
+        }
+      }
+    },
+    {
+      "name": "Leg 29 at 60%, left of track",
+      "position": {
+        "timestamp": 165.0,
+        "coordinate": {
+          "latitude": 37.08919134,
+          "longitude": -121.60885885
+        },
+        "heading": 155.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 30 at 60%, right of track",
+      "position": {
+        "timestamp": 170.0,
+        "coordinate": {
+          "latitude": 37.08620608,
+          "longitude": -121.60735742
+        },
+        "heading": 145.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 31 at 60%, left of track",
+      "position": {
+        "timestamp": 175.0,
+        "coordinate": {
+          "latitude": 37.08336089,
+          "longitude": -121.60560497
+        },
+        "heading": 155.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": -1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Leg 32 at 60%, right of track",
+      "position": {
+        "timestamp": 180.0,
+        "coordinate": {
+          "latitude": 37.08037563,
+          "longitude": -121.60410353
+        },
+        "heading": 145.83
+      },
+      "expected": {
+        "guidance": {
+          "heading_deg": 1.92,
+          "distance_m": 148.9
+        }
+      }
+    },
+    {
+      "name": "Inside the final capture radius",
+      "position": {
+        "timestamp": 185.0,
+        "coordinate": {
+          "latitude": 37.07945362,
+          "longitude": -121.6035684
+        },
+        "heading": 150.83
+      },
+      "expected": "no_guidance"
+    },
+    {
+      "name": "Backtracking after completion",
+      "position": {
+        "timestamp": 190.0,
+        "coordinate": {
+          "latitude": 37.08081341,
+          "longitude": -121.60426555
+        },
+        "heading": 330.83
+      },
+      "expected": "no_guidance"
+    }
+  ]
+}

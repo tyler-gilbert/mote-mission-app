@@ -9,6 +9,7 @@ use bee_ui::{
     theme::bootstrap_tokens::{ColorMode, card_component},
 };
 
+mod guidance;
 mod imu;
 mod lidar;
 
@@ -16,7 +17,6 @@ use mote_api::messages::router;
 
 use crate::{state, transport::WorkerSnapshot};
 
-const GUIDANCE_PLOT_ID: &str = "mote.telemetry.guidance";
 const CONTROL_PLOT_ID: &str = "mote.telemetry.control";
 
 const PLOT_CONTROLS_HEIGHT: f32 = 160.0;
@@ -61,7 +61,7 @@ impl TelemetryPlot {
 
 pub(crate) struct Context {
     selected_plot: Option<TelemetryPlot>,
-    guidance: LivePlotContext,
+    guidance: guidance::Context,
     control: LivePlotContext,
     imu: imu::Context,
     lidar: lidar::Context,
@@ -71,7 +71,7 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             selected_plot: None,
-            guidance: LivePlotContext::new(2),
+            guidance: guidance::Context::default(),
             control: LivePlotContext::new(2),
             imu: imu::Context::default(),
             lidar: lidar::Context::default(),
@@ -84,6 +84,7 @@ pub(crate) fn render(
     context: &mut Context,
     ui_state: &mut state::Context,
     reference_frame: Option<&router::ReferenceFrame>,
+    route: Option<&router::Route>,
 ) {
     let mut selected_plot = context.selected_plot.unwrap_or_default();
 
@@ -107,24 +108,9 @@ pub(crate) fn render(
     let plot_height = ui.raw(|raw_ui| (raw_ui.available_height() - PLOT_CONTROLS_HEIGHT).max(0.0));
 
     match selected_plot {
-        TelemetryPlot::Guidance => render_live_plot(
-            ui,
-            &mut context.guidance,
-            LivePlotOptions {
-                id: GUIDANCE_PLOT_ID,
-                series: &[("heading", "Heading"), ("distance", "Distance")],
-                values: telemetry.guidance.as_ref().map(|value| {
-                    [
-                        quantity_value(value.heading),
-                        quantity_value(value.distance),
-                    ]
-                }),
-                received_at: telemetry.guidance_received_at,
-                waiting_for: "Guidance",
-                y_axis: "Value",
-                height: plot_height,
-            },
-        ),
+        TelemetryPlot::Guidance => {
+            guidance::render(ui, &mut context.guidance, telemetry, reference_frame, route);
+        }
 
         TelemetryPlot::Control => render_live_plot(
             ui,

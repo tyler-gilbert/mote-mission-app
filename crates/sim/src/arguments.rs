@@ -31,8 +31,13 @@ enum Harness {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Invoke guidance with an empty route and the default position.
-    Guidance,
+    /// Run a test vector of known positions through guidance against a route.
+    Guidance {
+        /// Settings JSON containing the route (for example, san_martin_pattern.json).
+        route: PathBuf,
+        /// Test vector JSON of positions and expected guidance.
+        vector: PathBuf,
+    },
     /// Invoke control without a guidance update.
     Control,
 }
@@ -46,17 +51,7 @@ pub fn execute() -> anyhow::Result<()> {
         Harness::ConvertTelemetry { input, output } => {
             runner::convert_telemetry_to_json(&input, output.as_deref())
         }
-        Harness::Guidance => {
-            let position = router::Position::default();
-            let route = router::Route::new();
-            let timestamp = position.timestamp;
-            let result = runner::guidance(timestamp, &position, &route);
-            println!(
-                "Guidance harness completed; produced output: {}.",
-                result.is_some()
-            );
-            Ok(())
-        }
+        Harness::Guidance { route, vector } => runner::guidance_vector(&route, &vector),
         Harness::Control => {
             let result = runner::control(router::Position::default().timestamp, None);
             println!(

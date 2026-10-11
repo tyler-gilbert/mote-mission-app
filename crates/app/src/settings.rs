@@ -299,7 +299,8 @@ mod tests {
                 "reference_frame": {
                     "global_center": {"latitude": 37.081481615, "longitude": -121.5968056},
                     "global_diagonal": 20000.0,
-                    "local_diagonal": 3.0
+                    "local_diagonal": 3.0,
+                    "structure_side_wall_length": 0.2032
                 },
                 "route": [
                     {"latitude": 37.07924456, "longitude": -121.60339},
@@ -312,6 +313,7 @@ mod tests {
         let reference_frame = &settings.reference_frame;
         assert!(reference_frame.global_diagonal == units::Length::new(20_000.0));
         assert!(reference_frame.local_diagonal == units::Length::new(3.0));
+        assert!(reference_frame.structure_side_wall_length == units::Length::new(0.2032));
         assert_eq!(settings.route.len(), 2);
         assert!(settings.route[0].latitude == units::imperial::Degrees::new(37.079_243));
     }

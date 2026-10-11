@@ -127,10 +127,12 @@ impl Context {
         }
     }
 
-    /// Keeps the X and Y spans identical. Fit modes act as a one-shot square fit to the data.
+    /// Keeps the requested X and Y spans identical. Fit modes act as a one-shot square fit to
+    /// the data.
     fn constrain_viewport(&mut self, dataset: &ScatterDataset) {
-        // Equal spans are enforced here; egui's data aspect lock would fight them.
-        self.viewport.lock_aspect_ratio = false;
+        // With a locked view the plot keeps this square visible at a 1:1 data aspect and widens
+        // the shorter axis to fill the plot, so a pixel is the same distance on X and Y.
+        self.viewport.lock_aspect_ratio = true;
         if (self.viewport.x_mode != AxisZoomMode::Manual
             || self.viewport.y_mode != AxisZoomMode::Manual)
             && let Some(bounds) = dataset_bounds(dataset)
@@ -162,12 +164,7 @@ pub(super) fn render(
     context.apply_reference_frame(reference_frame);
     context.constrain_viewport(&dataset);
 
-    // A square plot keeps equal X and Y spans geometrically undistorted.
-    let side = ui.raw(|raw_ui| raw_ui.available_width()).min(height);
-    let props = ScatterPlotProps::new(LIDAR_PLOT_ID)
-        .axis_labels("Y (mm)", "X (mm)")
-        .size(side, side);
-
+    let props = plot_props(height);
     ui.raw(|raw_ui| {
         ScatterPlot::show_with_viewport(raw_ui, &props, &dataset, &mut context.viewport);
         raw_ui.push_id("mote.telemetry.lidar.controls", |scoped_ui| {
@@ -178,6 +175,18 @@ pub(super) fn render(
         }
     });
     context.constrain_viewport(&dataset);
+}
+
+/// The plot fills the available width. Its view is driven only by the viewport (which stays
+/// square), and pan/zoom edit the viewport without changing its aspect ratio.
+fn plot_props(height: f32) -> ScatterPlotProps {
+    ScatterPlotProps::new(LIDAR_PLOT_ID)
+        .axis_labels("Y (mm)", "X (mm)")
+        .height(height)
+        .fill_width(true)
+        .lock_view(true)
+        .uniform_zoom(true)
+        .drag_to_pan(true)
 }
 
 /// Maps robot-frame coordinates so robot forward (+X) points up and robot +Y points right.
@@ -517,5 +526,56 @@ mod tests {
         assert_close(viewport.x_span(), 2_200.0);
         assert_close(viewport.y_span(), 2_200.0);
         assert_close(viewport.y_min + viewport.y_max, 500.0);
+        assert!(viewport.lock_aspect_ratio);
+    }
+
+    #[test]
+    fn plot_fills_the_width_with_a_view_controlled_by_the_viewport() {
+        let props = plot_props(300.0);
+        assert_eq!(props.plot.width, None);
+        assert!(props.plot.fill_width);
+        assert_eq!(props.plot.height, Some(300.0));
+        assert!(props.lock_view && props.uniform_zoom && props.drag_to_pan);
+    }
+
+    #[test]
+    fn wide_plot_widens_x_to_keep_equal_scale_on_both_axes() {
+        let mut context = Context::default();
+        context.apply_reference_frame(Some(&reference_frame(3.0)));
+        let dataset = ScatterDataset::new(vec![ScatterSeries::new("returns", "Returns")]);
+        context.constrain_viewport(&dataset);
+        let span = context.viewport.y_span();
+
+        let ctx = egui::Context::default();
+        let mut plotted = None;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 600.0),
+                )),
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = ScatterPlot::show_with_viewport(
+                        ui,
+                        &plot_props(300.0),
+                        &dataset,
+                        &mut context.viewport,
+                    );
+                    plotted = response.plotted_bounds;
+                });
+            });
+            context.constrain_viewport(&dataset);
+        }
+        let plotted = plotted.expect("plot was shown");
+
+        // The requested square stays fully visible; X is widened to fill the wide plot.
+        assert_close(plotted.y_max - plotted.y_min, span);
+        assert!(plotted.x_max - plotted.x_min > 2.0 * span, "{plotted:?}");
+        assert_close(plotted.x_min + plotted.x_max, 0.0);
+        assert_close(context.viewport.x_span(), span);
+        assert_close(context.viewport.y_span(), span);
     }
 }

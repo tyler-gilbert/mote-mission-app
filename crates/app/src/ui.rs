@@ -140,6 +140,7 @@ pub(crate) fn render(
                     &mut context.telemetry,
                     ui_state,
                     context.settings.reference_frame(),
+                    context.settings.route(),
                 );
             }
             ControlPanel::Settings => {

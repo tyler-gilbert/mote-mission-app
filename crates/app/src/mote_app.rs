@@ -4,7 +4,7 @@ use std::{
 };
 
 use eframe::egui;
-use mote_api::messages::host_to_mote;
+use mote_api::messages::{host_to_mote, router};
 
 use crate::{
     connection,
@@ -75,7 +75,7 @@ impl MoteApp {
             ConnectionStatus::Connected { .. }
         ) {
             self.ui_context.control.telemetry_selection_sent = false;
-            self.ui_context.control.mode_enabled = false;
+            self.ui_context.control.control_mode = router::ControlMode::None;
             self.ui_context.control.drive_velocity = (0.0, 0.0);
         }
     }
@@ -154,7 +154,7 @@ impl eframe::App for MoteApp {
         for action in actions {
             self.apply_ui_action(action);
         }
-        if !self.ui_context.control.mode_enabled {
+        if self.ui_context.control.control_mode != router::ControlMode::Remote {
             self.stop_drive();
         }
 

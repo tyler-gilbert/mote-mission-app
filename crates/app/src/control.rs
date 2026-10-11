@@ -25,8 +25,23 @@ const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 2] = [
     ("Fast", router::TelemetrySelection::Fast),
 ];
 
+const CONTROL_MODES: [(router::ControlMode, SvgIcon, &str, &str); 2] = [
+    (
+        router::ControlMode::Auto,
+        SvgIcon::Robot,
+        "autonomous control",
+        "the navigation, guidance, and control pipeline drives the motors",
+    ),
+    (
+        router::ControlMode::Remote,
+        SvgIcon::Joystick,
+        "remote control",
+        "drive the Mote with the arrow buttons",
+    ),
+];
+
 pub(crate) struct Context {
-    pub(crate) mode_enabled: bool,
+    pub(crate) control_mode: router::ControlMode,
     pub(crate) drive_velocity: (f32, f32),
     pub(crate) telemetry_selection: router::TelemetrySelection,
     pub(crate) telemetry_selection_sent: bool,
@@ -54,7 +69,7 @@ impl Context {
 impl Default for Context {
     fn default() -> Self {
         Self {
-            mode_enabled: false,
+            control_mode: router::ControlMode::None,
             drive_velocity: STOP,
             telemetry_selection: router::TelemetrySelection::Slow,
             telemetry_selection_sent: false,
@@ -226,26 +241,22 @@ pub(crate) fn render(
         .as_ref()
         .map(|debug| (debug.reference_frame_hash, debug.route_hash));
 
-    let (remote_control_clicked, pressed, mode_changed, record_clicked) =
+    let (control_mode_clicked, pressed, mode_changed, record_clicked) =
         ui.hstack(HStack::new().gap(4.0), |ui| {
-            let _ = ui.raw(|raw_ui| {
-                raw_ui
-                    .add(SpanIcon::new(SvgIcon::Joystick).size(16.0).egui_image(None))
-                    .on_hover_text("Select the telemetry stream requested from the Mote")
-            });
-
-            let remote_control_button = if context.mode_enabled {
-                Button::success("")
-                    .icon(SvgIcon::ToggleOn)
-                    .hover_text("Disable remote control")
-            } else {
-                Button::secondary("")
-                    .icon(SvgIcon::ToggleOff)
-                    .hover_text("Enable remote control")
-            };
-            let remote_control_clicked = ui
-                .button(remote_control_button.enabled(connected))
-                .clicked();
+            let mut control_mode_clicked = None;
+            for (mode, icon, label, description) in CONTROL_MODES {
+                if control_mode_button(
+                    ui,
+                    connected,
+                    context.control_mode,
+                    mode,
+                    icon,
+                    label,
+                    description,
+                ) {
+                    control_mode_clicked = Some(mode);
+                }
+            }
 
             let pressed = ui.raw(|raw_ui| {
                 raw_ui
@@ -261,7 +272,8 @@ pub(crate) fn render(
                         .map(|(icon, tooltip)| {
                             directional_button(
                                 raw_ui,
-                                connected && context.mode_enabled,
+                                connected
+                                    && context.control_mode == router::ControlMode::Remote,
                                 icon,
                                 tooltip,
                             )
@@ -312,30 +324,26 @@ pub(crate) fn render(
             render_plan_status(ui, expected_hashes, received_hashes);
 
             (
-                remote_control_clicked,
+                control_mode_clicked,
                 pressed,
                 (selected_mode, mode_changed),
                 record_clicked,
             )
         });
 
-    if remote_control_clicked {
-        let enabling = !context.mode_enabled;
-        if enabling {
-            send_message(context, ui_state, router::Message::EnableControlMode);
-        } else {
-            let stopped = context.drive_velocity == STOP
-                || send_message(
-                    context,
-                    ui_state,
-                    router::Message::MotorDrive(router::MotorDrive {
-                        left: units::AngularVelocity::new(0.0),
-                        right: units::AngularVelocity::new(0.0),
-                    }),
-                );
-            if stopped {
-                send_message(context, ui_state, router::Message::DisableControlMode);
-            }
+    if let Some(clicked_mode) = control_mode_clicked {
+        let next_mode = next_control_mode(context.control_mode, clicked_mode);
+        let stopped = context.drive_velocity == STOP
+            || send_message(
+                context,
+                ui_state,
+                router::Message::MotorDrive(router::MotorDrive {
+                    left: units::AngularVelocity::new(0.0),
+                    right: units::AngularVelocity::new(0.0),
+                }),
+            );
+        if stopped {
+            send_message(context, ui_state, router::Message::ControlMode(next_mode));
         }
     }
 
@@ -363,8 +371,8 @@ pub(crate) fn render(
         }
     }
 
-    let mode_enabled = connected && context.mode_enabled;
-    let target_velocity = if mode_enabled {
+    let remote_enabled = connected && context.control_mode == router::ControlMode::Remote;
+    let target_velocity = if remote_enabled {
         let forward = (pressed[1] as i8 - pressed[2] as i8) as f32 * FORWARD_SPEED_RAD_PER_S;
         let turn = (pressed[3] as i8 - pressed[0] as i8) as f32 * TURN_SPEED_RAD_PER_S;
         (
@@ -495,8 +503,9 @@ fn send_message(
     }
 
     match message {
-        router::Message::EnableControlMode => context.mode_enabled = true,
-        router::Message::DisableControlMode => context.mode_enabled = false,
+        router::Message::ControlMode(control_mode) => {
+            context.control_mode = control_mode;
+        }
         router::Message::MotorDrive(motor_drive) => {
             context.drive_velocity = (motor_drive.left.into(), motor_drive.right.into());
         }
@@ -596,6 +605,59 @@ fn telemetry_mode_index(selection: &router::TelemetrySelection) -> usize {
         .iter()
         .position(|(_, candidate)| candidate == selection)
         .unwrap_or_default()
+}
+
+/// Clicking the active mode returns to `None`; clicking an inactive mode selects it.
+fn next_control_mode(
+    current: router::ControlMode,
+    clicked: router::ControlMode,
+) -> router::ControlMode {
+    if current == clicked {
+        router::ControlMode::None
+    } else {
+        clicked
+    }
+}
+
+/// A mode can be toggled while no mode is active or while it is the active one.
+fn control_mode_button_enabled(current: router::ControlMode, mode: router::ControlMode) -> bool {
+    current == router::ControlMode::None || current == mode
+}
+
+fn control_mode_button(
+    ui: &mut UiRoot<'_>,
+    connected: bool,
+    current: router::ControlMode,
+    mode: router::ControlMode,
+    icon: SvgIcon,
+    label: &str,
+    description: &str,
+) -> bool {
+    let active = current == mode;
+    let enabled = connected && control_mode_button_enabled(current, mode);
+    let (variant, hover_text) = if active {
+        (Variant::Success, format!("Disable {label}"))
+    } else {
+        (Variant::Secondary, format!("Enable {label}: {description}"))
+    };
+    let disabled_hover_text = if !connected {
+        format!("Connect to a Mote to enable {label}")
+    } else {
+        let active_label = CONTROL_MODES
+            .iter()
+            .find(|(candidate, ..)| *candidate == current)
+            .map_or("the active control mode", |(_, _, label, _)| *label);
+        format!("Disable {active_label} before enabling {label}")
+    };
+    ui.button(
+        Button::new("")
+            .variant(variant)
+            .icon(icon)
+            .hover_text(hover_text)
+            .enabled(enabled),
+    )
+    .on_disabled_hover_text(disabled_hover_text)
+    .clicked()
 }
 
 fn directional_button(
@@ -731,5 +793,36 @@ mod tests {
             TELEMETRY_MODES[telemetry_mode_index(&context.telemetry_selection)].0,
             "Slow"
         );
+    }
+
+    #[test]
+    fn control_mode_defaults_to_none() {
+        assert!(Context::default().control_mode == router::ControlMode::None);
+    }
+
+    #[test]
+    fn clicking_an_inactive_control_mode_selects_it() {
+        for (mode, ..) in CONTROL_MODES {
+            assert!(next_control_mode(router::ControlMode::None, mode) == mode);
+        }
+    }
+
+    #[test]
+    fn clicking_the_active_control_mode_returns_to_none() {
+        for (mode, ..) in CONTROL_MODES {
+            assert!(next_control_mode(mode, mode) == router::ControlMode::None);
+        }
+    }
+
+    #[test]
+    fn control_mode_buttons_are_all_enabled_only_when_no_mode_is_active() {
+        for (mode, ..) in CONTROL_MODES {
+            assert!(control_mode_button_enabled(router::ControlMode::None, mode));
+        }
+        for (active, ..) in CONTROL_MODES {
+            for (mode, ..) in CONTROL_MODES {
+                assert_eq!(control_mode_button_enabled(active, mode), active == mode);
+            }
+        }
     }
 }
