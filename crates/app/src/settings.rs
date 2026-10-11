@@ -87,8 +87,6 @@ pub(crate) fn render(
     ui_state: &mut state::Context,
 ) {
     ui.label(Label::new("Settings").large());
-    ui.text(Text::new("Adjust the app appearance and interface scale.").subtle());
-
     let connected = matches!(
         ui_state.snapshot.connection,
         ConnectionStatus::Connected { .. }
@@ -104,7 +102,6 @@ pub(crate) fn render(
         ui.text(Text::new(
             "Load a JSON settings file containing both the reference frame and route. Settings can be prepared while disconnected.",
         ));
-        ui.label(Label::new("Settings JSON file path").small());
         if ui
             .form_control(&mut context.settings_path, FormControl::new())
             .changed()
@@ -118,26 +115,16 @@ pub(crate) fn render(
             control_context.clear_plan();
         }
 
-        if let Some(settings) = context.settings_preview.as_ref() {
-            ui.label(Label::new("Expected device hashes").small());
-            ui.hstack(HStack::new().wrap(true), |ui| {
-                ui.badge(
-                    Badge::info(format!(
-                        "Reference frame: {:#010x}",
-                        settings.reference_frame.hash()
-                    ))
-                    .as_pill(),
-                );
-                ui.badge(
-                    Badge::info(format!(
-                        "Route: {:#010x}",
-                        router::hash_route(&settings.route)
-                    ))
-                    .as_pill(),
-                );
-            });
-            ui.text(Text::new("Compare these with the hashes reported by the device.").subtle());
-        }
+        let device_hashes = if connected {
+            ui_state
+                .snapshot
+                .latest_telemetry
+                .debug
+                .as_ref()
+                .map(|debug| (debug.reference_frame_hash, debug.route_hash))
+        } else {
+            None
+        };
 
         let cooldown_remaining = context
             .send_disabled_until
@@ -167,6 +154,21 @@ pub(crate) fn render(
                     .disabled()
                     .hover_text("Settings loaded locally"),
             );
+            if let Some((reference_frame_hash, route_hash)) = context.expected_hashes() {
+                ui.badge(
+                    Badge::new(format!("Reference frame: {reference_frame_hash:#010x}"))
+                        .variant(hash_variant(
+                            reference_frame_hash,
+                            device_hashes.map(|hashes| hashes.0),
+                        ))
+                        .as_pill(),
+                );
+                ui.badge(
+                    Badge::new(format!("Route: {route_hash:#010x}"))
+                        .variant(hash_variant(route_hash, device_hashes.map(|hashes| hashes.1)))
+                        .as_pill(),
+                );
+            }
             if !control_context.plan_confirmed()
                 && let Some(Ok(message)) = context.settings_result.as_ref()
             {
@@ -272,6 +274,14 @@ fn parse_settings(input: &str) -> Result<router::Settings, serde_json::Error> {
     serde_json::from_str(input)
 }
 
+fn hash_variant(expected: u32, device: Option<u32>) -> Variant {
+    match device {
+        None => Variant::Secondary,
+        Some(device) if device == expected => Variant::Success,
+        Some(_) => Variant::Danger,
+    }
+}
+
 fn render_send_result(ui: &mut UiRoot<'_>, result: Option<&Result<String, String>>) {
     if let Some(Err(error)) = result {
         ui.alert(Alert::danger(error.as_str()));
@@ -304,5 +314,12 @@ mod tests {
         assert!(reference_frame.local_diagonal == units::Length::new(3.0));
         assert_eq!(settings.route.len(), 2);
         assert!(settings.route[0].latitude == units::imperial::Degrees::new(37.079_243));
+    }
+
+    #[test]
+    fn hash_variant_reflects_connected_device_hash() {
+        assert_eq!(hash_variant(0x1234, None), Variant::Secondary);
+        assert_eq!(hash_variant(0x1234, Some(0x1234)), Variant::Success);
+        assert_eq!(hash_variant(0x1234, Some(0x4321)), Variant::Danger);
     }
 }

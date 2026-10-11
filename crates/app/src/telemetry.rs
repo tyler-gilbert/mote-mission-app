@@ -17,7 +17,6 @@ use mote_api::messages::router;
 use crate::{state, transport::WorkerSnapshot};
 
 const GUIDANCE_PLOT_ID: &str = "mote.telemetry.guidance";
-const POSITION_PLOT_ID: &str = "mote.telemetry.position";
 const CONTROL_PLOT_ID: &str = "mote.telemetry.control";
 
 const PLOT_CONTROLS_HEIGHT: f32 = 160.0;
@@ -34,7 +33,6 @@ const STATUS_GUTTER: f32 = 12.0;
 enum TelemetryPlot {
     #[default]
     Guidance,
-    Position,
     Control,
     Imu,
     Lidar,
@@ -42,9 +40,8 @@ enum TelemetryPlot {
 }
 
 impl TelemetryPlot {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::Guidance,
-        Self::Position,
         Self::Control,
         Self::Imu,
         Self::Lidar,
@@ -54,7 +51,6 @@ impl TelemetryPlot {
     const fn label(self) -> &'static str {
         match self {
             Self::Guidance => "Guidance",
-            Self::Position => "Navigation",
             Self::Control => "Control",
             Self::Imu => "IMU",
             Self::Lidar => "LiDAR",
@@ -66,7 +62,6 @@ impl TelemetryPlot {
 pub(crate) struct Context {
     selected_plot: Option<TelemetryPlot>,
     guidance: LivePlotContext,
-    position: LivePlotContext,
     control: LivePlotContext,
     imu: imu::Context,
     lidar: lidar::Context,
@@ -77,7 +72,6 @@ impl Default for Context {
         Self {
             selected_plot: None,
             guidance: LivePlotContext::new(2),
-            position: LivePlotContext::new(3),
             control: LivePlotContext::new(2),
             imu: imu::Context::default(),
             lidar: lidar::Context::default(),
@@ -131,25 +125,7 @@ pub(crate) fn render(
                 height: plot_height,
             },
         ),
-        TelemetryPlot::Position => render_live_plot(
-            ui,
-            &mut context.position,
-            LivePlotOptions {
-                id: POSITION_PLOT_ID,
-                series: &[("north", "North"), ("east", "East"), ("heading", "Heading")],
-                values: telemetry.position.as_ref().map(|value| {
-                    [
-                        quantity_value(value.coordinate.latitude),
-                        quantity_value(value.coordinate.longitude),
-                        quantity_value(value.heading),
-                    ]
-                }),
-                received_at: telemetry.position_received_at,
-                waiting_for: "Navigation",
-                y_axis: "Value",
-                height: plot_height,
-            },
-        ),
+
         TelemetryPlot::Control => render_live_plot(
             ui,
             &mut context.control,

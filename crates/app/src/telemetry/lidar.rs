@@ -62,9 +62,10 @@ impl LidarPlotHistory {
             if self.points.len() == LIDAR_POINT_CAPACITY {
                 self.points.pop_front();
             }
+            let (x, y) = robot_to_plot(distance * angle.cos(), distance * angle.sin());
             self.points.push_back(LidarHistoryPoint {
-                x: distance * angle.cos(),
-                y: distance * angle.sin(),
+                x,
+                y,
                 size: intensity_size(reading.quality),
                 received_at: timestamp,
             });
@@ -164,7 +165,7 @@ pub(super) fn render(
     // A square plot keeps equal X and Y spans geometrically undistorted.
     let side = ui.raw(|raw_ui| raw_ui.available_width()).min(height);
     let props = ScatterPlotProps::new(LIDAR_PLOT_ID)
-        .axis_labels("X (mm)", "Y (mm)")
+        .axis_labels("Y (mm)", "X (mm)")
         .size(side, side);
 
     ui.raw(|raw_ui| {
@@ -177,6 +178,11 @@ pub(super) fn render(
         }
     });
     context.constrain_viewport(&dataset);
+}
+
+/// Maps robot-frame coordinates so robot forward (+X) points up and robot +Y points right.
+fn robot_to_plot(x: f64, y: f64) -> (f64, f64) {
+    (y, x)
 }
 
 fn intensity_size(intensity: u8) -> f32 {
@@ -346,10 +352,11 @@ mod tests {
         assert_eq!(points[0].size, LIDAR_MIN_POINT_SIZE);
         assert_eq!(points[1].size, LIDAR_MAX_POINT_SIZE);
         assert_eq!(points[0].color, LIDAR_POINT_COLOR);
-        assert!((points[0].x - 1_000.0).abs() < 1e-6);
-        assert!(points[0].y.abs() < 1e-6);
-        assert!(points[1].x.abs() < 1e-4);
-        assert!((points[1].y - 500.0).abs() < 1e-4);
+        // Robot forward (+X) is plotted up; robot +Y is plotted right.
+        assert!(points[0].x.abs() < 1e-6);
+        assert!((points[0].y - 1_000.0).abs() < 1e-6);
+        assert!((points[1].x - 500.0).abs() < 1e-4);
+        assert!(points[1].y.abs() < 1e-4);
     }
 
     #[test]
@@ -436,10 +443,10 @@ mod tests {
         let points = &dataset.series[0].points;
 
         assert_eq!(points.len(), LIDAR_POINT_CAPACITY);
-        assert_eq!(points[0].x, 2_000.0);
-        assert_eq!(points[0].y, 0.0);
+        assert_eq!(points[0].x, 0.0);
+        assert_eq!(points[0].y, 2_000.0);
         assert_eq!(
-            points[points.len() - 1].x,
+            points[points.len() - 1].y,
             (LIDAR_POINT_CAPACITY + 1) as f64 * 1_000.0
         );
     }

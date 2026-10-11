@@ -9,7 +9,7 @@ use mote_api::{
     messages::router,
     work::{control, guidance, navigation},
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 #[derive(Default)]
 struct HarnessContext {
@@ -21,6 +21,7 @@ struct HarnessContext {
     position: Option<router::Position>,
     reference_frame: Option<router::ReferenceFrame>,
     telemetry_selection: router::TelemetrySelection,
+    imu_telemetry_decimator: router::ImuTelemetryDecimator,
     debug: router::Status,
     telemetry: Vec<router::Message>,
     positions: Vec<router::Position>,
@@ -45,7 +46,10 @@ impl HarnessContext {
     }
 
     fn handle_imu(&mut self, timestamp: units::Time, imu: router::Imu) {
-        if self.telemetry_selection.is_send_imu() {
+        if self
+            .imu_telemetry_decimator
+            .should_send(self.telemetry_selection)
+        {
             self.telemetry.push(router::Message::Imu(imu.clone()));
         }
 
@@ -85,10 +89,8 @@ impl HarnessContext {
 
     fn handle_position(&mut self, position: Option<router::Position>, timestamp: units::Time) {
         if let Some(position) = position {
-            if self.telemetry_selection.is_send_navigation() {
-                self.telemetry
-                    .push(router::Message::Position(position.clone()));
-            }
+            self.telemetry
+                .push(router::Message::Position(position.clone()));
             self.position = Some(position.clone());
             self.positions.push(position);
         }
@@ -101,20 +103,16 @@ impl HarnessContext {
                 self.guidance_context
                     .update(timestamp, position, route, &mut self.debug);
             if let Some(guidance) = guidance {
-                if self.telemetry_selection.is_send_guidance() {
-                    self.telemetry
-                        .push(router::Message::Guidance(guidance.clone()));
-                }
+                self.telemetry
+                    .push(router::Message::Guidance(guidance.clone()));
                 self.guidance.push(guidance.clone());
 
                 if let Some(control) =
                     self.control_context
                         .update(timestamp, Some(guidance), &mut self.debug)
                 {
-                    if self.telemetry_selection.is_send_control() {
-                        self.telemetry
-                            .push(router::Message::Control(control.clone()));
-                    }
+                    self.telemetry
+                        .push(router::Message::Control(control.clone()));
                     if self.control_mode_enabled {
                         self.motor_commands.push(control.motor_drive.clone());
                     }
@@ -1316,16 +1314,18 @@ mod tests {
         let mut context = navigation::Context::default();
         let frame = phase_four_test_frame();
         let imu = phase_five_imu((0.0, 0.0, 0.0), (0.0, 0.0, 1.0));
-        assert!(context
-            .update(
-                units::Time::new(0.1),
-                None,
-                None,
-                Some(imu),
-                &frame,
-                &mut router::Status::default(),
-            )
-            .is_none());
+        assert!(
+            context
+                .update(
+                    units::Time::new(0.1),
+                    None,
+                    None,
+                    Some(imu),
+                    &frame,
+                    &mut router::Status::default(),
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -1514,16 +1514,18 @@ mod tests {
     #[test]
     fn context_update_without_a_scan_does_not_create_a_revolution() {
         let mut context = navigation::Context::default();
-        assert!(context
-            .update(
-                units::Time::new(0.0),
-                None,
-                None,
-                None,
-                &router::ReferenceFrame::default(),
-                &mut router::Status::default(),
-            )
-            .is_none());
+        assert!(
+            context
+                .update(
+                    units::Time::new(0.0),
+                    None,
+                    None,
+                    None,
+                    &router::ReferenceFrame::default(),
+                    &mut router::Status::default(),
+                )
+                .is_none()
+        );
         assert!(context.current_revolution().is_none());
         assert_eq!(context.revolution_wraps(), 0);
     }

@@ -20,19 +20,9 @@ const FORWARD_SPEED_RAD_PER_S: f32 = 1.5;
 const TURN_SPEED_RAD_PER_S: f32 = 1.0;
 const STOP: (f32, f32) = (0.0, 0.0);
 
-const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 9] = [
-    ("None          ", router::TelemetrySelection::None),
-    ("Control       ", router::TelemetrySelection::Control),
-    ("Guidance      ", router::TelemetrySelection::Guidance),
-    ("Navigation    ", router::TelemetrySelection::Navigation),
-    ("IMU           ", router::TelemetrySelection::Imu),
-    ("Remote Control", router::TelemetrySelection::RemoteControl),
-    ("LiDAR         ", router::TelemetrySelection::Lidar),
-    (
-        "Position Inputs",
-        router::TelemetrySelection::PositionInputs,
-    ),
-    ("All           ", router::TelemetrySelection::All),
+const TELEMETRY_MODES: [(&str, router::TelemetrySelection); 2] = [
+    ("Slow", router::TelemetrySelection::Slow),
+    ("Fast", router::TelemetrySelection::Fast),
 ];
 
 pub(crate) struct Context {
@@ -66,7 +56,7 @@ impl Default for Context {
         Self {
             mode_enabled: false,
             drive_velocity: STOP,
-            telemetry_selection: router::TelemetrySelection::RemoteControl,
+            telemetry_selection: router::TelemetrySelection::Slow,
             telemetry_selection_sent: false,
             recorder: None,
             recording_error: None,
@@ -262,10 +252,10 @@ pub(crate) fn render(
                     .horizontal(|raw_ui| {
                         raw_ui.spacing_mut().item_spacing.x = 2.0;
                         [
-                            (SvgIcon::ArrowLeft, "Drive left"),
+                            (SvgIcon::ArrowCounterclockwise, "Turn left"),
                             (SvgIcon::ArrowUp, "Drive forward"),
                             (SvgIcon::ArrowDown, "Drive backward"),
-                            (SvgIcon::ArrowRight, "Drive right"),
+                            (SvgIcon::ArrowClockwise, "Turn right"),
                         ]
                         .into_iter()
                         .map(|(icon, tooltip)| {
@@ -284,7 +274,9 @@ pub(crate) fn render(
             let _ = ui.raw(|raw_ui| {
                 raw_ui
                     .add(SpanIcon::new(SvgIcon::Activity).size(16.0).egui_image(None))
-                    .on_hover_text("Select the telemetry stream requested from the Mote")
+                    .on_hover_text(
+                        "Telemetry rate: Slow omits LiDAR and limits IMU to ~5 Hz; Fast sends everything",
+                    )
             });
 
             let mut selected_mode = selected_mode;
@@ -348,7 +340,7 @@ pub(crate) fn render(
     }
 
     if mode_changed.1 {
-        context.telemetry_selection = TELEMETRY_MODES[mode_changed.0].1.clone();
+        context.telemetry_selection = TELEMETRY_MODES[mode_changed.0].1;
         context.telemetry_selection_sent = false;
     }
     if !connected {
@@ -357,7 +349,7 @@ pub(crate) fn render(
         && send_message(
             context,
             ui_state,
-            router::Message::TelemetrySelection(context.telemetry_selection.clone()),
+            router::Message::TelemetrySelection(context.telemetry_selection),
         )
     {
         context.telemetry_selection_sent = true;
@@ -543,7 +535,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
     let samples = [
         (
             0,
-            TelemetryKind::Guidance,
             telemetry
                 .guidance_received_at
                 .zip(telemetry.guidance.as_ref())
@@ -553,7 +544,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
         ),
         (
             1,
-            TelemetryKind::Navigation,
             telemetry
                 .position_received_at
                 .zip(telemetry.position.as_ref())
@@ -563,7 +553,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
         ),
         (
             2,
-            TelemetryKind::Control,
             telemetry
                 .control_received_at
                 .zip(telemetry.control.as_ref())
@@ -571,7 +560,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
         ),
         (
             3,
-            TelemetryKind::Imu,
             telemetry
                 .imu_received_at
                 .zip(telemetry.imu.as_ref())
@@ -579,7 +567,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
         ),
         (
             4,
-            TelemetryKind::Lidar,
             telemetry
                 .lidar_scan_received_at
                 .zip(telemetry.lidar_scan.as_ref())
@@ -591,8 +578,7 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
 
     let write_error = samples
         .into_iter()
-        .filter(|(_, kind, _)| selection_includes(&context.telemetry_selection, *kind))
-        .filter_map(|(index, _, sample)| {
+        .filter_map(|(index, sample)| {
             sample.map(|(received_at, message)| (index, received_at, message))
         })
         .find_map(|(index, received_at, message)| {
@@ -602,37 +588,6 @@ fn record_telemetry(context: &mut Context, ui_state: &mut state::Context) {
     if let Some(error) = write_error {
         context.recorder = None;
         context.recording_error = Some(format!("Could not write telemetry recording: {error}"));
-    }
-}
-
-#[derive(Clone, Copy)]
-enum TelemetryKind {
-    Control,
-    Guidance,
-    Navigation,
-    Imu,
-    Lidar,
-}
-
-fn selection_includes(selection: &router::TelemetrySelection, kind: TelemetryKind) -> bool {
-    match selection {
-        router::TelemetrySelection::None => false,
-        router::TelemetrySelection::Control => matches!(kind, TelemetryKind::Control),
-        router::TelemetrySelection::Guidance => matches!(kind, TelemetryKind::Guidance),
-        router::TelemetrySelection::Navigation => matches!(kind, TelemetryKind::Navigation),
-        router::TelemetrySelection::Imu => matches!(kind, TelemetryKind::Imu),
-        router::TelemetrySelection::RemoteControl => matches!(
-            kind,
-            TelemetryKind::Control
-                | TelemetryKind::Guidance
-                | TelemetryKind::Navigation
-                | TelemetryKind::Imu
-        ),
-        router::TelemetrySelection::Lidar => matches!(kind, TelemetryKind::Lidar),
-        router::TelemetrySelection::PositionInputs => {
-            matches!(kind, TelemetryKind::Imu | TelemetryKind::Lidar)
-        }
-        router::TelemetrySelection::All => true,
     }
 }
 
@@ -761,7 +716,7 @@ mod tests {
 
     #[test]
     fn telemetry_modes_cover_the_router_selection_enum() {
-        assert_eq!(TELEMETRY_MODES.len(), 9);
+        assert_eq!(TELEMETRY_MODES.len(), 2);
         for (index, (label, selection)) in TELEMETRY_MODES.iter().enumerate() {
             assert!(!label.is_empty());
             assert_eq!(telemetry_mode_index(selection), index);
@@ -769,18 +724,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_control_records_control_and_navigation_inputs_but_not_lidar() {
-        assert!(selection_includes(
-            &router::TelemetrySelection::RemoteControl,
-            TelemetryKind::Control
-        ));
-        assert!(selection_includes(
-            &router::TelemetrySelection::RemoteControl,
-            TelemetryKind::Guidance
-        ));
-        assert!(!selection_includes(
-            &router::TelemetrySelection::RemoteControl,
-            TelemetryKind::Lidar
-        ));
+    fn telemetry_defaults_to_slow() {
+        let context = Context::default();
+        assert!(context.telemetry_selection == router::TelemetrySelection::Slow);
+        assert_eq!(
+            TELEMETRY_MODES[telemetry_mode_index(&context.telemetry_selection)].0,
+            "Slow"
+        );
     }
 }
