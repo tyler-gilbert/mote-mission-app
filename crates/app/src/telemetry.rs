@@ -3,9 +3,10 @@ use std::{collections::VecDeque, time::Instant};
 use bee_ui::{
     UiRoot,
     prelude::{
-        Card, Col, DisclosureState, Dropdown, DropdownItem, PlotPoint, Row, TimeSeries,
-        TimeSeriesDataset, TimeSeriesPlotProps, ViewportState,
+        Button, Card, Col, HStack, PlotPoint, Row, TimeSeries, TimeSeriesDataset,
+        TimeSeriesPlotProps, Variant, ViewportState,
     },
+    theme::bootstrap_tokens::{ColorMode, card_component},
 };
 
 mod imu;
@@ -13,7 +14,7 @@ mod lidar;
 
 use mote_api::messages::router;
 
-use crate::state;
+use crate::{state, transport::WorkerSnapshot};
 
 const GUIDANCE_PLOT_ID: &str = "mote.telemetry.guidance";
 const POSITION_PLOT_ID: &str = "mote.telemetry.position";
@@ -84,25 +85,29 @@ impl Default for Context {
     }
 }
 
-pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut state::Context) {
+pub(crate) fn render(
+    ui: &mut UiRoot<'_>,
+    context: &mut Context,
+    ui_state: &mut state::Context,
+    reference_frame: Option<&router::ReferenceFrame>,
+) {
     let mut selected_plot = context.selected_plot.unwrap_or_default();
 
-    let plot_selector =
-        TelemetryPlot::ALL
-            .iter()
-            .fold(Dropdown::new(selected_plot.label()), |dropdown, plot| {
-                dropdown.item(DropdownItem::new(plot.label()).active(*plot == selected_plot))
-            });
-    let clicked_index = ui
-        .dropdown(
-            DisclosureState::uncontrolled("mote.telemetry.plot_selector", false),
-            plot_selector,
-        )
-        .clicked_index();
-
-    if let Some(index) = clicked_index {
-        selected_plot = TelemetryPlot::ALL[index];
-    }
+    ui.hstack(HStack::new().wrap(true), |ui| {
+        for plot in TelemetryPlot::ALL {
+            let variant = if plot == selected_plot {
+                Variant::Primary
+            } else {
+                Variant::Secondary
+            };
+            if ui
+                .button(Button::new(plot.label()).variant(variant))
+                .clicked()
+            {
+                selected_plot = plot;
+            }
+        }
+    });
 
     let telemetry = &ui_state.snapshot.latest_telemetry;
     let plot_height = ui.raw(|raw_ui| (raw_ui.available_height() - PLOT_CONTROLS_HEIGHT).max(0.0));
@@ -165,15 +170,22 @@ pub(crate) fn render(ui: &mut UiRoot<'_>, context: &mut Context, ui_state: &mut 
         ),
         TelemetryPlot::Imu => imu::render(ui, &mut context.imu, ui_state, plot_height),
         TelemetryPlot::Lidar => {
-            lidar::render(ui, &mut context.lidar, ui_state, plot_height);
+            lidar::render(
+                ui,
+                &mut context.lidar,
+                ui_state,
+                reference_frame,
+                plot_height,
+            );
         }
-        TelemetryPlot::Status => render_debug_dashboard(ui, telemetry),
+        TelemetryPlot::Status => render_debug_dashboard(ui, &ui_state.snapshot),
     }
 
     context.selected_plot = Some(selected_plot);
 }
 
-fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
+fn render_debug_dashboard(ui: &mut UiRoot<'_>, snapshot: &WorkerSnapshot) {
+    let telemetry = &snapshot.latest_telemetry;
     ui.row(
         Row::new()
             .gutter_x(STATUS_GUTTER)
@@ -190,8 +202,21 @@ fn render_debug_dashboard(ui: &mut UiRoot<'_>, telemetry: &crate::transport::Lat
     );
 }
 
+fn status_card(title: &'static str) -> Card {
+    Card::with_title(title).variant(Variant::Secondary)
+}
+
+/// Height available to the scroll area of a `fill_height` card.
+///
+/// The card adds its bottom padding after the body, so reserve that (and the item spacing before
+/// it) to keep the card's bottom edge inside the space the card was given.
+fn fill_card_scroll_height(raw_ui: &eframe::egui::Ui) -> f32 {
+    let card_bottom_padding = f32::from(card_component(ColorMode::default()).spacer_y);
+    (raw_ui.available_height() - card_bottom_padding - raw_ui.spacing().item_spacing.y).max(0.0)
+}
+
 fn render_packet_status(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
-    ui.card(Card::with_title("Packet status"), |ui| {
+    ui.card(status_card("Packet status"), |ui| {
         ui.raw(|raw_ui| {
             raw_ui.horizontal_wrapped(|raw_ui| {
                 raw_ui.vertical(|raw_ui| {
@@ -230,75 +255,77 @@ fn render_packet_status(ui: &mut UiRoot<'_>, telemetry: &crate::transport::Lates
 }
 
 fn render_counters(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
-    ui.card(Card::with_title("Counters").fill_height(), |ui| {
-        if let Some(debug) = telemetry.debug.as_ref() {
-            let rows = counter_rows(&debug.counters);
-            ui.raw(|raw_ui| {
-                eframe::egui::ScrollArea::vertical()
-                    .id_salt("mote.telemetry.debug.counters.scroll")
-                    .auto_shrink([false, false])
-                    .show(raw_ui, |raw_ui| {
-                        let row_spacing = raw_ui.spacing().item_spacing.y;
-                        let column_width = ((raw_ui.available_width()
-                            - COUNTER_COLUMN_GAP * (COUNTER_COLUMNS - 1) as f32)
-                            / COUNTER_COLUMNS as f32)
-                            .max(0.0);
-                        let row_height = raw_ui.spacing().interact_size.y;
-                        eframe::egui::Grid::new("mote.telemetry.debug.counters")
-                            .num_columns(COUNTER_COLUMNS)
-                            .spacing([COUNTER_COLUMN_GAP, row_spacing])
-                            .min_col_width(column_width)
-                            .max_col_width(column_width)
-                            .striped(true)
-                            .show(raw_ui, |raw_ui| {
-                                for row in &rows {
-                                    for (key, value) in row {
-                                        // Size each cell to its column so long counter names
-                                        // truncate instead of widening the card. The value is
-                                        // pinned to the right edge and the name fills the rest
-                                        // from the left edge.
-                                        raw_ui.allocate_ui_with_layout(
-                                            eframe::egui::vec2(column_width, row_height),
-                                            eframe::egui::Layout::right_to_left(
-                                                eframe::egui::Align::Center,
-                                            ),
-                                            |cell_ui| {
-                                                cell_ui.label(value);
-                                                cell_ui.add_space(COUNTER_LABEL_VALUE_GAP);
-                                                cell_ui.with_layout(
-                                                    eframe::egui::Layout::left_to_right(
-                                                        eframe::egui::Align::Center,
-                                                    ),
-                                                    |label_ui| {
-                                                        label_ui.add(
-                                                            eframe::egui::Label::new(
-                                                                eframe::egui::RichText::new(key)
-                                                                    .strong(),
-                                                            )
-                                                            .truncate(),
-                                                        );
-                                                    },
-                                                );
-                                            },
-                                        );
-                                    }
-                                    raw_ui.end_row();
+    ui.card(status_card("Counters").fill_height(), |ui| {
+        ui.raw(|raw_ui| {
+            eframe::egui::ScrollArea::vertical()
+                .id_salt("mote.telemetry.debug.counters.scroll")
+                .auto_shrink([false, false])
+                .max_height(fill_card_scroll_height(raw_ui))
+                .show(raw_ui, |raw_ui| {
+                    let Some(debug) = telemetry.debug.as_ref() else {
+                        raw_ui.label("Waiting for debug counters…");
+                        return;
+                    };
+                    let rows = counter_rows(&debug.counters);
+                    let row_spacing = raw_ui.spacing().item_spacing.y;
+                    let column_width = ((raw_ui.available_width()
+                        - COUNTER_COLUMN_GAP * (COUNTER_COLUMNS - 1) as f32)
+                        / COUNTER_COLUMNS as f32)
+                        .max(0.0);
+                    let row_height = raw_ui.spacing().interact_size.y;
+                    eframe::egui::Grid::new("mote.telemetry.debug.counters")
+                        .num_columns(COUNTER_COLUMNS)
+                        .spacing([COUNTER_COLUMN_GAP, row_spacing])
+                        .min_col_width(column_width)
+                        .max_col_width(column_width)
+                        .striped(true)
+                        .show(raw_ui, |raw_ui| {
+                            for row in &rows {
+                                for (key, value) in row {
+                                    // Size each cell to its column so long counter names
+                                    // truncate instead of widening the card. The value is
+                                    // pinned to the right edge and the name fills the rest
+                                    // from the left edge.
+                                    raw_ui.allocate_ui_with_layout(
+                                        eframe::egui::vec2(column_width, row_height),
+                                        eframe::egui::Layout::right_to_left(
+                                            eframe::egui::Align::Center,
+                                        ),
+                                        |cell_ui| {
+                                            cell_ui.label(value);
+                                            cell_ui.add_space(COUNTER_LABEL_VALUE_GAP);
+                                            cell_ui.with_layout(
+                                                eframe::egui::Layout::left_to_right(
+                                                    eframe::egui::Align::Center,
+                                                ),
+                                                |label_ui| {
+                                                    label_ui.add(
+                                                        eframe::egui::Label::new(
+                                                            eframe::egui::RichText::new(key)
+                                                                .strong(),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                },
+                                            );
+                                        },
+                                    );
                                 }
-                            });
-                    });
-            });
-        } else {
-            ui.text(bee_ui::prelude::Text::new("Waiting for debug counters…").subtle());
-        }
+                                raw_ui.end_row();
+                            }
+                        });
+                });
+        });
     });
 }
 
 fn render_log(ui: &mut UiRoot<'_>, telemetry: &crate::transport::LatestTelemetry) {
-    ui.card(Card::with_title("Log").fill_height(), |ui| {
+    ui.card(status_card("Log").fill_height(), |ui| {
         ui.raw(|raw_ui| {
             eframe::egui::ScrollArea::vertical()
                 .id_salt("mote.telemetry.debug.log.scroll")
                 .auto_shrink([false, false])
+                .max_height(fill_card_scroll_height(raw_ui))
                 .stick_to_bottom(true)
                 .show(raw_ui, |raw_ui| {
                     if telemetry.debug_logs.is_empty() {
@@ -471,6 +498,13 @@ mod tests {
         assert_eq!(dataset.series[0].points[0], PlotPoint::new(0.0, 1.0));
         assert_eq!(dataset.series[0].points[1], PlotPoint::new(0.25, 3.0));
         assert_eq!(dataset.series[1].points[1], PlotPoint::new(0.25, 4.0));
+    }
+
+    #[test]
+    fn status_cards_use_the_secondary_variant() {
+        let card = status_card("Log").fill_height();
+        assert_eq!(card.variant, Variant::Secondary);
+        assert!(card.fill_height);
     }
 
     #[test]

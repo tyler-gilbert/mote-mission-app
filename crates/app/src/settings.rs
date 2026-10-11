@@ -12,7 +12,6 @@ use mote_api::messages::router;
 
 use crate::{control, state, transport::ConnectionStatus};
 
-#[derive(Default)]
 pub(crate) struct Context {
     settings_path: String,
     settings_preview: Option<router::Settings>,
@@ -21,6 +20,23 @@ pub(crate) struct Context {
 }
 
 impl Context {
+    pub(crate) fn new(settings_path: String) -> Self {
+        let (settings_preview, settings_result) = if settings_path.trim().is_empty() {
+            (None, None)
+        } else {
+            match load_settings(&settings_path) {
+                Ok(settings) => (Some(settings), None),
+                Err(error) => (None, Some(Err(error))),
+            }
+        };
+        Self {
+            settings_path,
+            settings_preview,
+            settings_result,
+            send_disabled_until: None,
+        }
+    }
+
     pub(crate) fn global_center(&self) -> Option<(f64, f64)> {
         let reference_frame = &self.settings_preview.as_ref()?.reference_frame;
         let latitude: f32 = reference_frame.global_center.latitude.into();
@@ -41,6 +57,12 @@ impl Context {
             .global_diagonal
             .into();
         (diagonal.is_finite() && diagonal > 0.0).then(|| f64::from(diagonal))
+    }
+
+    pub(crate) fn reference_frame(&self) -> Option<&router::ReferenceFrame> {
+        self.settings_preview
+            .as_ref()
+            .map(|settings| &settings.reference_frame)
     }
 
     pub(crate) fn route(&self) -> Option<&router::Route> {
@@ -76,7 +98,9 @@ pub(crate) fn render(
         _ => None,
     };
 
-    ui.card(Card::with_title("Mission settings"), |ui| {
+    ui.card(
+            Card::with_title("Mission settings").variant(Variant::Secondary),
+            |ui| {
         ui.text(Text::new(
             "Load a JSON settings file containing both the reference frame and route. Settings can be prepared while disconnected.",
         ));
@@ -87,6 +111,10 @@ pub(crate) fn render(
         {
             context.settings_result = None;
             context.settings_preview = load_settings(&context.settings_path).ok();
+            ui_state.persistent_settings.mission_settings_path = context.settings_path.clone();
+            if let Err(error) = ui_state.persistent_settings.save() {
+                context.settings_result = Some(Err(error));
+            }
             control_context.clear_plan();
         }
 
@@ -167,60 +195,65 @@ pub(crate) fn render(
             });
         }
         render_send_result(ui, context.settings_result.as_ref());
-    });
+    },
+    );
 
-    ui.card(Card::with_title("Appearance"), |ui| {
-        ui.label(Label::new("Color theme").small());
-        let theme = ui.context().theme();
-        ui.hstack(HStack::new().wrap(true), |ui| {
-            const LIGHT_ICON: SvgIcon = SvgIcon::Sun;
-            let light_button = if theme == egui::Theme::Light {
-                Button::primary("Light").icon(LIGHT_ICON)
-            } else {
-                Button::secondary("Light").icon(LIGHT_ICON)
-            };
-            if ui.button(light_button).clicked() {
-                ui.context().set_theme(egui::Theme::Light);
-            }
+    ui.card(
+        Card::with_title("Appearance").variant(Variant::Secondary),
+        |ui| {
+            ui.label(Label::new("Color theme").small());
+            ui.hstack(HStack::new().wrap(true), |ui| {
+                if ui
+                    .button(
+                        Button::new("Light")
+                            .variant(Variant::Light)
+                            .icon(SvgIcon::Sun),
+                    )
+                    .clicked()
+                {
+                    ui.context().set_theme(egui::Theme::Light);
+                }
 
-            const DARK_ICON: SvgIcon = SvgIcon::Moon;
-            let dark_button = if theme == egui::Theme::Dark {
-                Button::primary("Dark").icon(DARK_ICON)
-            } else {
-                Button::secondary("Dark").icon(DARK_ICON)
-            };
-            if ui.button(dark_button).clicked() {
-                ui.context().set_theme(egui::Theme::Dark);
-            }
-        });
+                if ui
+                    .button(
+                        Button::new("Dark")
+                            .variant(Variant::Dark)
+                            .icon(SvgIcon::Moon),
+                    )
+                    .clicked()
+                {
+                    ui.context().set_theme(egui::Theme::Dark);
+                }
+            });
 
-        ui.label(Label::new("Interface zoom").small());
-        let zoom = ui.context().zoom_factor();
-        ui.hstack(HStack::new().wrap(true), |ui| {
-            if ui
-                .button(
-                    Button::secondary("Zoom -")
-                        .icon(SvgIcon::ZoomOut)
-                        .enabled(zoom > 0.5),
-                )
-                .clicked()
-            {
-                ui.context().set_zoom_factor((zoom - 0.1).max(0.5));
-            }
-            ui.badge(Badge::info(format!("{:.0}%", zoom * 100.0)).as_pill());
-            if ui
-                .button(
-                    Button::secondary("Zoom +")
-                        .icon(SvgIcon::ZoomIn)
-                        .enabled(zoom < 3.0),
-                )
-                .clicked()
-            {
-                ui.context().set_zoom_factor((zoom + 0.1).min(3.0));
-            }
-        });
-        ui.text(Text::new("Zoom range: 50%–300%.").subtle());
-    });
+            ui.label(Label::new("Interface zoom").small());
+            let zoom = ui.context().zoom_factor();
+            ui.hstack(HStack::new().wrap(true), |ui| {
+                if ui
+                    .button(
+                        Button::secondary("Zoom -")
+                            .icon(SvgIcon::ZoomOut)
+                            .enabled(zoom > 0.5),
+                    )
+                    .clicked()
+                {
+                    ui.context().set_zoom_factor((zoom - 0.1).max(0.5));
+                }
+                ui.badge(Badge::secondary(format!("{:.0}%", zoom * 100.0)).as_pill());
+                if ui
+                    .button(
+                        Button::secondary("Zoom +")
+                            .icon(SvgIcon::ZoomIn)
+                            .enabled(zoom < 3.0),
+                    )
+                    .clicked()
+                {
+                    ui.context().set_zoom_factor((zoom + 0.1).min(3.0));
+                }
+            });
+            ui.text(Text::new("Zoom range: 50%–300%.").subtle());
+        },
+    );
 }
 
 fn load_settings(path: &str) -> Result<router::Settings, String> {

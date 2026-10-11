@@ -113,10 +113,6 @@ pub(crate) struct WorkerSnapshot {
     pub devices: Vec<DiscoveredDevice>,
     pub discovery_status: String,
     pub connection: ConnectionStatus,
-    pub incoming_messages: u64,
-    pub malformed_packets: u64,
-    pub version_mismatches: u64,
-    pub last_protocol_error: Option<String>,
     pub latest_telemetry: LatestTelemetry,
 }
 
@@ -246,10 +242,6 @@ impl WorkerState {
             devices: self.devices.values().cloned().collect(),
             discovery_status: self.discovery_status.clone(),
             connection,
-            incoming_messages: self.incoming_messages,
-            malformed_packets: self.malformed_packets,
-            version_mismatches: self.version_mismatches,
-            last_protocol_error: self.last_protocol_error.clone(),
             latest_telemetry: self.latest_telemetry.clone(),
         }
     }

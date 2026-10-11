@@ -2502,6 +2502,7 @@ dependencies = [
  "mote-api",
  "postcard",
  "sci-units",
+ "serde",
  "serde_json",
 ]
 

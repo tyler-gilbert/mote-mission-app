@@ -135,7 +135,12 @@ pub(crate) fn render(
                 ui_state.snapshot.latest_telemetry.position.as_ref(),
             ),
             ControlPanel::Telemetry => {
-                telemetry::render(ui, &mut context.telemetry, ui_state);
+                telemetry::render(
+                    ui,
+                    &mut context.telemetry,
+                    ui_state,
+                    context.settings.reference_frame(),
+                );
             }
             ControlPanel::Settings => {
                 settings::render(ui, &mut context.settings, &mut context.control, ui_state)

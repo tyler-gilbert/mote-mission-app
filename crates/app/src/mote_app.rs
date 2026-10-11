@@ -22,25 +22,28 @@ pub(crate) struct MoteApp {
 
 impl MoteApp {
     pub(crate) fn new() -> Self {
+        let persistent_settings = state::PersistentSettings::load().unwrap_or_else(|error| {
+            eprintln!("{error}");
+            state::PersistentSettings::default()
+        });
+        let settings =
+            crate::settings::Context::new(persistent_settings.mission_settings_path.clone());
         Self {
             ui_context: ui::Context {
                 connection: connection::Context::default(),
                 control: crate::control::Context::default(),
                 mission: crate::mission::Context,
                 telemetry: crate::telemetry::Context::default(),
-                settings: crate::settings::Context::default(),
+                settings,
             },
             ui_state: state::Context {
                 worker: TransportWorker::start(),
+                persistent_settings,
                 device_refresh_until: None,
                 snapshot: WorkerSnapshot {
                     devices: Vec::new(),
                     discovery_status: "Starting mDNS discovery…".to_owned(),
                     connection: ConnectionStatus::Disconnected,
-                    incoming_messages: 0,
-                    malformed_packets: 0,
-                    version_mismatches: 0,
-                    last_protocol_error: None,
                     latest_telemetry: transport::LatestTelemetry::default(),
                 },
                 last_error: None,
