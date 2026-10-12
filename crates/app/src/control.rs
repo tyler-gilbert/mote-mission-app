@@ -241,10 +241,22 @@ pub(crate) fn render(
         .as_ref()
         .map(|debug| (debug.reference_frame_hash, debug.route_hash));
 
-    let (control_mode_clicked, pressed, mode_changed, record_clicked) =
+    let (control_mode_clicked, reset_route_clicked, pressed, mode_changed, record_clicked) =
         ui.hstack(HStack::new().gap(4.0), |ui| {
             let mut control_mode_clicked = None;
+            let mut reset_route_clicked = false;
             for (mode, icon, label, description) in CONTROL_MODES {
+                if mode == router::ControlMode::Remote {
+                    reset_route_clicked = ui
+                        .button(
+                            Button::warning("")
+                                .icon(SvgIcon::ArrowCounterclockwise)
+                                .hover_text("Reset route progress")
+                                .enabled(connected),
+                        )
+                        .on_disabled_hover_text("Connect to a Mote to reset route progress")
+                        .clicked();
+                }
                 if control_mode_button(
                     ui,
                     connected,
@@ -325,6 +337,7 @@ pub(crate) fn render(
 
             (
                 control_mode_clicked,
+                reset_route_clicked,
                 pressed,
                 (selected_mode, mode_changed),
                 record_clicked,
@@ -345,6 +358,10 @@ pub(crate) fn render(
         if stopped {
             send_message(context, ui_state, router::Message::ControlMode(next_mode));
         }
+    }
+
+    if reset_route_clicked {
+        send_message(context, ui_state, router::Message::ResetRoute);
     }
 
     if mode_changed.1 {
