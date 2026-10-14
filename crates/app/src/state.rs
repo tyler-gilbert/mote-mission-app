@@ -1,5 +1,6 @@
 use std::{
     fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -110,5 +111,6 @@ pub(crate) enum UiAction {
     Refresh,
     SelectDevice(String),
     Connect(String),
+    ConnectAddress(SocketAddr),
     Disconnect,
 }

@@ -1,3 +1,5 @@
+use std::net::{Ipv4Addr, SocketAddr};
+
 use bee_ui::{
     UiRoot,
     prelude::{
@@ -8,12 +10,13 @@ use bee_ui::{
 
 use crate::{
     state::{self, UiAction},
-    transport::{ConnectionStatus, DiscoveredDevice},
+    transport::{ConnectionStatus, DiscoveredDevice, MOTE_UDP_PORT},
 };
 
 #[derive(Default)]
 pub(crate) struct Context {
     pub(crate) selected_device: Option<String>,
+    pub(crate) direct_ip: String,
 }
 
 pub(crate) fn reconcile_selected_device(devices: &[DiscoveredDevice], context: &mut Context) {
@@ -143,6 +146,37 @@ pub(crate) fn render(
         },
     );
 
+    ui.card(
+        Card::with_title("Direct connection").variant(Variant::Secondary),
+        |ui| {
+            ui.text(Text::new(format!(
+                "Connect by IPv4 address when mDNS discovery is unavailable. UDP port {MOTE_UDP_PORT} is used."
+            )));
+            ui.hstack(HStack::new().wrap(true), |ui| {
+                ui.label(Label::new("IPv4 address").small());
+                ui.raw(|raw_ui| {
+                    raw_ui.add(
+                        eframe::egui::TextEdit::singleline(&mut context.direct_ip)
+                            .hint_text("192.168.1.42")
+                            .desired_width(180.0),
+                    );
+                });
+                let direct_endpoint = parse_direct_endpoint(&context.direct_ip);
+                if ui
+                    .button(
+                        Button::primary("Connect to IP")
+                            .icon(SvgIcon::Plug)
+                            .enabled(direct_endpoint.is_some() && connected_uid.is_none()),
+                    )
+                    .clicked()
+                    && let Some(endpoint) = direct_endpoint
+                {
+                    actions.push(UiAction::ConnectAddress(endpoint));
+                }
+            });
+        },
+    );
+
     if let Some(error) = last_error {
         ui.alert(Alert::danger(error));
     }
@@ -155,6 +189,11 @@ pub(crate) fn render(
     );
 
     actions
+}
+
+fn parse_direct_endpoint(address: &str) -> Option<SocketAddr> {
+    let address = address.trim().parse::<Ipv4Addr>().ok()?;
+    Some(SocketAddr::from((address, MOTE_UDP_PORT)))
 }
 
 fn can_connect(selected: Option<&DiscoveredDevice>) -> bool {
@@ -201,6 +240,7 @@ mod tests {
         let devices = [discovered_device("mote-2._mote-api._udp.local.")];
         let mut context = Context {
             selected_device: Some("mote-1._mote-api._udp.local.".to_owned()),
+            ..Context::default()
         };
 
         reconcile_selected_device(&devices, &mut context);
@@ -214,6 +254,7 @@ mod tests {
         let devices = [discovered_device(fullname)];
         let mut context = Context {
             selected_device: Some(fullname.to_owned()),
+            ..Context::default()
         };
 
         reconcile_selected_device(&devices, &mut context);
@@ -232,6 +273,17 @@ mod tests {
                 .map(|device| device.uid.as_str()),
             Some("mote-1")
         );
+    }
+
+    #[test]
+    fn direct_connection_requires_a_valid_ipv4_address_and_uses_the_mote_port() {
+        assert_eq!(
+            parse_direct_endpoint(" 192.168.1.42 "),
+            Some(SocketAddr::from(([192, 168, 1, 42], MOTE_UDP_PORT)))
+        );
+        assert_eq!(parse_direct_endpoint(""), None);
+        assert_eq!(parse_direct_endpoint("mote.local"), None);
+        assert_eq!(parse_direct_endpoint("999.1.1.1"), None);
     }
 
     #[test]

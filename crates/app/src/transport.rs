@@ -12,6 +12,7 @@ use mote_api::{
     messages::{host_to_mote, mote_to_host, router},
 };
 
+pub(crate) const MOTE_UDP_PORT: u16 = 7475;
 const SERVICE_TYPE: &str = "_mote-api._udp.local.";
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(4);
@@ -150,6 +151,10 @@ impl TransportWorker {
         self.send_request(WorkerRequest::Connect(fullname))
     }
 
+    pub(crate) fn connect_address(&self, endpoint: SocketAddr) -> Result<(), String> {
+        self.send_request(WorkerRequest::ConnectAddress(endpoint))
+    }
+
     pub(crate) fn disconnect(&self) -> Result<(), String> {
         self.send_request(WorkerRequest::Disconnect)
     }
@@ -190,6 +195,7 @@ enum WorkerRequest {
     Command(Box<WorkerCommand>),
     Refresh,
     Connect(String),
+    ConnectAddress(SocketAddr),
     Disconnect,
     Shutdown,
 }
@@ -308,34 +314,21 @@ fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapsh
                     dirty = true;
                 }
                 Ok(WorkerRequest::Connect(fullname)) => {
-                    close_session(&mut session);
-                    state.last_protocol_error = None;
-                    state.latest_telemetry = LatestTelemetry::default();
-                    match state.devices.get(&fullname).cloned() {
-                        Some(device) => match device.endpoint {
-                            Some(endpoint) => match connect_device(device, endpoint) {
-                                Ok(new_session) => {
-                                    state.connection = ConnectionStatus::Disconnected;
-                                    session = Some(new_session);
-                                }
-                                Err(error) => {
-                                    state.connection = ConnectionStatus::Error(error);
-                                    session = None;
-                                }
-                            },
-                            None => {
-                                state.connection = ConnectionStatus::Error(format!(
-                                    "{} has no resolved IPv4 address and cannot be connected",
-                                    device.uid
-                                ));
-                            }
-                        },
-                        None => {
-                            state.connection = ConnectionStatus::Error(
-                                "The selected Mote is no longer in the discovery list".to_owned(),
-                            );
-                        }
-                    }
+                    let device = state.devices.get(&fullname).cloned().ok_or_else(|| {
+                        "The selected Mote is no longer in the discovery list".to_owned()
+                    });
+                    connect_to_device(&mut state, &mut session, device);
+                    dirty = true;
+                }
+                Ok(WorkerRequest::ConnectAddress(endpoint)) => {
+                    let device = DiscoveredDevice {
+                        fullname: format!("manual:{endpoint}"),
+                        uid: endpoint.ip().to_string(),
+                        hostname: "Manual address".to_owned(),
+                        endpoint: Some(endpoint),
+                        status: "Manual connection".to_owned(),
+                    };
+                    connect_to_device(&mut state, &mut session, Ok(device));
                     dirty = true;
                 }
                 Ok(WorkerRequest::Disconnect) => {
@@ -469,6 +462,38 @@ fn run_worker(commands: Receiver<WorkerRequest>, events: SyncSender<WorkerSnapsh
         }
 
         thread::sleep(WORKER_TICK);
+    }
+}
+
+fn connect_to_device(
+    state: &mut WorkerState,
+    session: &mut Option<ActiveSession>,
+    device: Result<DiscoveredDevice, String>,
+) {
+    close_session(session);
+    state.last_protocol_error = None;
+    state.latest_telemetry = LatestTelemetry::default();
+
+    match device {
+        Ok(device) => match device.endpoint {
+            Some(endpoint) => match connect_device(device, endpoint) {
+                Ok(new_session) => {
+                    state.connection = ConnectionStatus::Disconnected;
+                    *session = Some(new_session);
+                }
+                Err(error) => {
+                    state.connection = ConnectionStatus::Error(error);
+                    *session = None;
+                }
+            },
+            None => {
+                state.connection = ConnectionStatus::Error(format!(
+                    "{} has no resolved IPv4 address and cannot be connected",
+                    device.uid
+                ));
+            }
+        },
+        Err(error) => state.connection = ConnectionStatus::Error(error),
     }
 }
 

@@ -130,6 +130,10 @@ impl MoteApp {
                 let result = self.ui_state.worker.connect(fullname);
                 self.handle_send_result(result);
             }
+            UiAction::ConnectAddress(endpoint) => {
+                let result = self.ui_state.worker.connect_address(endpoint);
+                self.handle_send_result(result);
+            }
             UiAction::Disconnect => {
                 let result = self.ui_state.worker.disconnect();
                 self.handle_send_result(result);

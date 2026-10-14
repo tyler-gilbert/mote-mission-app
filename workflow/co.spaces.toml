@@ -1,0 +1,39 @@
+[main.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "main"
+store = { MOTE_FIRMWARE_REV="main" }
+
+[aggressors.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "aggressors"
+store = { MOTE_FIRMWARE_REV="aggressors" }
+
+[barbarians.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "barbarians"
+store = { MOTE_FIRMWARE_REV="barbarians" }
+
+[cobras.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "cobras"
+store = { MOTE_FIRMWARE_REV="cobras" }
+
+[demons.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "demons"
+store = { MOTE_FIRMWARE_REV="demons" }
+
+[executioners.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "executioners"
+store = { MOTE_FIRMWARE_REV="executioners" }
+
+[flying-tigers.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "flying-tigers"
+store = { MOTE_FIRMWARE_REV="flying-tigers" }
+
+[hellcats.Repo]
+url = "https://github.com/tyler-gilbert/mote-mission-app"
+rev = "hellcats"
+store = { MOTE_FIRMWARE_REV="hellcats" }

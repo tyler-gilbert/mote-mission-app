@@ -14,6 +14,7 @@ load(
     "checkout_update_asset",
 )
 load("//@star/prelude/rules/sdk.star", "sdk_is_owner")
+load("//@star/prelude/rules/ws.star", "workspace_load_value")
 
 if sdk_is_owner():
     spaces_add_devutils(
@@ -43,10 +44,12 @@ if sdk_is_owner():
         deps = [":spaces0"],
     )
 
+_MOTE_FIRMWARE_REV = workspace_load_value("MOTE_FIRMWARE_REV") or "spacify-mote-bringup"
+
 checkout_add_repo(
     "mote",
     url = "https://github.com/tyler-gilbert/mote",
-    rev = "spacify-mote-bringup",
+    rev = _MOTE_FIRMWARE_REV,
 )
 
 checkout_add_repo(
