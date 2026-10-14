@@ -44,7 +44,7 @@ if sdk_is_owner():
         deps = [":spaces0"],
     )
 
-_MOTE_FIRMWARE_REV = workspace_load_value("MOTE_FIRMWARE_REV") or "spacify-mote-bringup"
+_MOTE_FIRMWARE_REV = workspace_load_value("MOTE_FIRMWARE_REV") or "main"
 
 checkout_add_repo(
     "mote",
