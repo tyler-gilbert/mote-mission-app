@@ -41,7 +41,7 @@ def add_cargo_project(name: str, deps = [], has_fixtures = False):
         command = "cargo",
         args = ["run"],
         working_directory = working_directory,
-        # No deps, always run
+        deps = cargo_deps,
     )
 
     run_add_exec(
