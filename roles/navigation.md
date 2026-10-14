@@ -22,8 +22,9 @@ Startup Tasks
 
 Training Tasks
 
-- Improve the navigation algorithm to have the right balance of precision and accuracy.
+- Improve the navigation algorithm to have the right balance of precision and accuracy for faster robot operations
   - Use the simulation test to check changes
+  - Work with guidance and control to help the robot go faster
   - Work with Ops to test changes on the robot
 
 Operational Tasks

@@ -13,8 +13,9 @@ Startup Tasks
 
 Training Tasks
 
-- Implement the guidance algorithm to compute the heading and distance for the next waypoint
+- Update the guidance algorithm to support faster and smoother operations
   - Use the simulation test to check changes
+  - Work with control to give better guidance
   - Work with Ops to test changes on the robot
 
 Operation Tasks.

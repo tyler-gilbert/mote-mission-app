@@ -8,6 +8,9 @@ Startup Tasks
   - This file implements the control algorithm.
   - It accepts a guidance heading and distance as the input.
   - It must compute the wheel speed of each wheel.
+- Review `mote/mote-firmware/src/tasks/gnc.rs`
+  - This is the GNC firmware task that calls the work/control code
+  - This file is informational but does not need to be modified.
 - Run the simulation test.
   - `spaces run //mote-mission-app:sim_control`
 

@@ -5,6 +5,7 @@ Spaces rules for developing the native Mote application.
 load("//@star/prelude/rules/deps.star", "deps_new")
 load("//@star/prelude/rules/rules.star", "rules_as_rule", "rules_new")
 load("//@star/prelude/rules/run.star", "run_add", "run_add_exec", "run_log_level_passthrough")
+load("//@star/prelude/rules/ws.star", "workspace_get_absolute_path")
 
 def cargo_deps_new(name: str, deps = [], files = [], has_fixtures = False):
     fixtures = ["crates/{}/fixtures/**".format(name)] if has_fixtures else []
@@ -95,6 +96,7 @@ add_cargo_project(
 add_cargo_project("sim", has_fixtures = True)
 
 sim_working_directory = "./crates/sim"
+telemetry_path = workspace_get_absolute_path() + "/telemetry-test-data"
 
 run_add_exec(
     "sim_navigation",
@@ -103,10 +105,10 @@ run_add_exec(
         "run",
         "--",
         "navigation",
-        "../../../telemetry_one_point_two_three_1791430559418.data",
-        "../../../telemetry_one_point_two_three_1791430559418.json",
-        "../../../telemetry_one_point_two_three_rotate90_1791430681872.data",
-        "../../../telemetry_one_point_two_three_rotate90_1791430681872.json",
+        telemetry_path + "/telemetry_one_point_two_three_1791430559418.data",
+        telemetry_path + "/telemetry_one_point_two_three_1791430559418.json",
+        telemetry_path + "/telemetry_one_point_two_three_rotate90_1791430681872.data",
+        telemetry_path + "/telemetry_one_point_two_three_rotate90_1791430681872.json",
     ],
     working_directory = sim_working_directory,
     deps = cargo_deps_new("sim", has_fixtures = True),
