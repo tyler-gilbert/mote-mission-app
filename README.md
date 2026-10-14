@@ -4,8 +4,8 @@
 
 Roles:
 
-- Commander. Executive decision maker.
-- Navigation Specialist. Determine precise location using sensing inputs.
-- Guidance Specialist. Determine the path to take using known position and route.
-- Control Specialist. Engage the motors to follow the guidance.
-- Ops Team. Operate the robot.
+- [Commander](roles/commander.md). Executive decision maker.
+- [Navigation Specialist](roles/navigation.md). Determine precise location using sensing inputs.
+- [Guidance Specialist](roles/guidance.md). Determine the path to take using known position and route.
+- [Control Specialist](roles/control.md). Engage the motors to follow the guidance.
+- [Ops Team](roles/ops.md). Operate the robot.

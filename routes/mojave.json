@@ -1,0 +1,30 @@
+{
+  "reference_frame": {
+    "global_center": {
+      "latitude": 34.91201625,
+      "longitude": -117.9170456
+    },
+    "global_diagonal": 75000.0,
+    "local_diagonal": 2.8576,
+    "structure_side_wall_length": 0.2032
+  },
+  "route": [
+    {"latitude": 35.0592145, "longitude": -118.1660699},
+    {"latitude": 35.0591965, "longitude": -118.1577924},
+    {"latitude": 35.0591830, "longitude": -118.1507058},
+    {"latitude": 35.0591674, "longitude": -118.1425423},
+    {"latitude": 34.6981064, "longitude": -118.1366153},
+    {"latitude": 35.0176306, "longitude": -117.6680213},
+    {"latitude": 34.9162718, "longitude": -117.8624458},
+    {"latitude": 34.9054044, "longitude": -117.8837500},
+    {"latitude": 34.8945504, "longitude": -117.9050252},
+    {"latitude": 34.8945504, "longitude": -117.9050252},
+    {"latitude": 34.9054044, "longitude": -117.8837500},
+    {"latitude": 34.9162718, "longitude": -117.8624458},
+    {"latitude": 35.1259261, "longitude": -117.9598680},
+    {"latitude": 35.0591674, "longitude": -118.1250000},
+    {"latitude": 35.0591674, "longitude": -118.1425423},
+    {"latitude": 35.0591830, "longitude": -118.1507058},
+    {"latitude": 35.0592145, "longitude": -118.1660699}
+  ]
+}

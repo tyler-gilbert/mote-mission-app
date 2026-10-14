@@ -1,0 +1,35 @@
+{
+  "reference_frame": {
+    "global_center": {
+      "latitude": 34.725,
+      "longitude": -105.305
+    },
+    "global_diagonal": 1000000.0,
+    "local_diagonal": 2.8576,
+    "structure_side_wall_length": 0.2032
+  },
+  "route": [
+    {"latitude": 35.0402, "longitude": -106.6090},
+    {"latitude": 35.5111, "longitude": -108.7898},
+    {"latitude": 35.0402, "longitude": -106.6090},
+    {"latitude": 37.1515, "longitude": -107.7538},
+    {"latitude": 35.0402, "longitude": -106.6090},
+    {"latitude": 34.9387, "longitude": -104.6825},
+    {"latitude": 34.4251, "longitude": -103.0793},
+    {"latitude": 33.3016, "longitude": -104.5306},
+    {"latitude": 33.6636, "longitude": -101.8228},
+    {"latitude": 32.3122, "longitude": -106.7783},
+    {"latitude": 32.6500, "longitude": -107.2500},
+    {"latitude": 32.8200, "longitude": -107.7200},
+    {"latitude": 32.9000, "longitude": -108.1500},
+    {"latitude": 32.9800, "longitude": -108.5200},
+    {"latitude": 33.1500, "longitude": -108.7800},
+    {"latitude": 33.4000, "longitude": -108.8300},
+    {"latitude": 33.6300, "longitude": -108.6500},
+    {"latitude": 33.7800, "longitude": -108.3500},
+    {"latitude": 33.7900, "longitude": -108.0200},
+    {"latitude": 33.6200, "longitude": -107.7300},
+    {"latitude": 33.4000, "longitude": -107.5200},
+    {"latitude": 35.0402, "longitude": -106.6090}
+  ]
+}
