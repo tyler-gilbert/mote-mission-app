@@ -19,7 +19,7 @@ def pre_checkout():
     checkout_add_repo(
         "@star/packages",
         url = "https://github.com/work-spaces/packages",
-        rev = "add-package-tracking",
+        rev = "main",
     )
 
 sdk_add_repo(
